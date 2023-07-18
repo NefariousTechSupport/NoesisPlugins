@@ -3,7 +3,6 @@ from struct import pack
 from inc_noesis import *
 
 #Debug Settings
-#dFirstObjectOffset = 0x5396c		# Offset of the first object to process, -1 means just loop through every object
 dFirstObjectOffset = -1		# Offset of the first object to process, -1 means just loop through every object
 dBuildMeshes = True			# Whether or not to build the meshes, or just parse the file, useful for debugging specific models on trap team or giants
 dBuildBones = True			# Whether or not to build the bones
@@ -139,12 +138,13 @@ class igzFile(object):
 		numModels = len(self.models)
 		if len(self.models) > dModelThreshold:
 			startIndex = noesis.userPrompt(noesis.NOEUSERVAL_INT, "Model Start Index", "Type in the index of the first model you want to extract (Highest: " + str(len(self.models) - 1) + ")")
-			numModels = noesis.userPrompt(noesis.NOEUSERVAL_INT, "Model count", "Type in the number of models you want to extract (Highest: " + str(len(self.models) - 1 - startIndex) + ")")
+			numModels = noesis.userPrompt(noesis.NOEUSERVAL_INT, "Model count", "Type in the number of models you want to extract (Highest: " + str(len(self.models) - startIndex) + ")")
 
 		for index in range(numModels):
 			print("Building model " + str(index+startIndex) + " of " + str(len(self.models)))
 			if len(self.models[index+startIndex].meshes) > 0:
 				mdlList.append(self.models[index+startIndex].build(self, index+startIndex))
+				rapi.rpgReset()
 
 	def bitAwareSeek(self, bs, baseOffset, offset64, offset32):
 		if self.is64Bit(self):
@@ -173,6 +173,8 @@ class igzFile(object):
 		if self.is64Bit(self):
 			bs.seek(0x04, NOESEEK_REL)
 		pointer = self.readPointer(bs)
+		if pointer == self.pointers[1]:
+			return (0, 0, [])
 		bs.seek(pointer, NOESEEK_ABS)
 		memory = bs.readBytes(size)
 		return (size, pointer, memory)
@@ -499,7 +501,7 @@ def unpack_UBYTE2N(data, element, endarg):
 def unpack_UBYTE3N(data, element, endarg):
 	return [float(data[element._offset + 0] / 0xFF), float(data[element._offset + 1] / 0xFF), float(data[element._offset + 2] / 0xFF), 1.0]
 def unpack_UBYTE4N(data, element, endarg):
-	return [float(data[element._offset + 0] / 0xFF), float(data[element._offset + 1] / 0xFF), float(data[element._offset + 2] / 0xFF), float(data[element._offset + 3] / 0xFF)]
+	return [float(data[element._offset + 0]) / 0xFF, float(data[element._offset + 1]) / 0xFF, float(data[element._offset + 2]) / 0xFF, float(data[element._offset + 3]) / 0xFF]
 
 def unpack_UBYTE4_X4(data, element, endarg):
 	return [float(data[element._offset + 0] * 0.25), float(data[element._offset + 1] * 0.25), float(data[element._offset + 2] * 0.25), float(data[element._offset + 3] * 0.25)]
@@ -521,9 +523,12 @@ def unpack_UNDEFINED_0(data, element, endarg):
 	raise Exception("Got IG_VERTEX_TYPE_UNDEFINED_0")
 	return [0.0, 0.0, 0.0, 0.0]
 
+def unpack_UBYTE4N_COLOR_ARGB(data, element, endarg):
+	color = unpack_UBYTE4N(data, element, endarg)
+	return [color[1], color[2], color[3], color[0]]
 def unpack_UBYTE2N_COLOR_5650(data, element, endarg):
-	color = unpack(endarg + 'H', data[element._offset:element._offset + 2])
-	return [(color & 31) / 31, ((color >> 5) & 63) / 63, (color >> 11) / 31, 1]
+	color = unpack(endarg + 'H', data[element._offset:element._offset + 2])[0]
+	return [((color >> 11) & 31) / 31, ((color >> 5) & 63) / 63, (color >> 0) / 31, 1]
 def unpack_UBYTE2N_COLOR_5551(data, element, endarg):
 	color = unpack(endarg + 'H', data[element._offset:element._offset + 2])
 	return [(color & 31) / 31, ((color >> 5) & 31) / 31, ((color >> 10) & 31) / 31, color >> 15]
@@ -710,6 +715,7 @@ class PS3MeshObject(object):
 			if self.vertexElements[i].count != 0:
 				for elem in self.vertexElements[i].elements:
 					if elem.edgeAttributeId == attributeId:
+						#print("stream: " + str(hex(i)) + "; attr: " + str(hex(elem.edgeAttributeId)) + "; offset: " + str(hex(elem.offset)) + "; format: " + str(hex(elem.format)) + "; componentCount: " + str(hex(elem.componentCount)) + "; size: " + str(hex(elem.size)) + "; vertexProgramSlotIndex: " + str(hex(elem.vertexProgramSlotIndex)) + "; fixedBlockOffset: " + str(hex(elem.fixedBlockOffset)))
 						unpackedBuffer = elem.unpack(self.vertexBuffers[i], self.vertexCount, self.vertexStrides[i])
 						return unpackedBuffer
 
@@ -766,13 +772,21 @@ class MeshObject(object):
 		self.spuConfigInfo = False	#PS3 Exclusive
 		self.skipBuild = False
 		self.vertexElements = []
+		self.vertexStreams = []
+		self.primType = noesis.RPGEO_TRIANGLE
 		self.indexCount = 0
 		self.boneMapIndex = 0
 		self.transformation = None
+		self.packData = None
+		self.platform = 0
+		self.platformData = None
 	def buildMesh(self, boneMapList, endianness, version):
 		rapi.rpgSetName(self.name)
 
 		endarg = '>' if endianness == "BE" else '<'
+
+		if self.vertexCount == 0:
+			return
 
 		print("vertex count    " + str(hex(self.vertexCount)))
 		print("vertex stride   " + str(hex(self.vertexStrides[0])))
@@ -780,52 +794,99 @@ class MeshObject(object):
 		print("name:           " + self.name)
 		print("bone map index: " + str(hex(self.boneMapIndex)))
 
+
 		if len(boneMapList) != 0 and len(boneMapList[self.boneMapIndex]) != 0 and dBuildBones:
 			rapi.rpgSetBoneMap(boneMapList[self.boneMapIndex])
 
+		indexableCount = 0
 		for elem in self.vertexElements:
-			print("usage: " + str(hex(elem._usage)) + "; offset: " + str(hex(elem._offset)) + "; count: " + str(hex(elem._count)) + "; type: " + str(hex(elem._type)))
 			if elem._type == 0x2C:
 				continue
+
+			streamOffset = 0
+			for i in range(elem._stream):
+				streamOffset += (((self.vertexStreams[i] * self.vertexCount) + 0x1F) // 0x20) * 0x20
+			print("Getting bytes for stream from " + str(hex(streamOffset)) + " to " + str(hex(streamOffset + self.vertexCount * self.vertexStreams[elem._stream])))
+			stream = bytes(self.vertexBuffers[0][streamOffset:streamOffset + self.vertexCount * self.vertexStreams[elem._stream]])
+			streamSize = self.vertexStreams[elem._stream]
+
+			print("usage: " + str(hex(elem._usage)) + "; offset: " + str(hex(elem._offset)) + "; stream: " + str(hex(elem._stream)) + "; count: " + str(hex(elem._count)) + "; type: " + str(hex(elem._type)) + "; mapToElement: " + str(hex(elem._mapToElement)) + "; usageIndex: " + str(hex(elem._usageIndex)) + "; packDataOffset: " + str(hex(elem._packDataOffset)) + "; packTypeAndFracHint: " + str(hex(elem._packTypeAndFracHint)) + "; freq: " + str(hex(elem._freq)) + "; streamOffset: " + str(hex(streamOffset)))
+
 			if elem._usage == 0:										# IG_VERTEX_USAGE_POSITION
+				shouldScaleDown = len(self.vertexStreams) > 0
 				stride = 0x10
 				if elem._type == 0x23:
 					fakeVertexBuffer = self.superchargersFunkiness(endarg)
 					stride = 0x0C
+				elif elem._type == 0x2E and shouldScaleDown:
+					fakeVertexBuffer = self.wiiFunkiness(stream, streamSize)
+					stride = 0x0C
 				else:
-					fakeVertexBuffer = elem.unpack(self.vertexBuffers[0], self.vertexStrides[0], endarg)
-					
+					fakeVertexBuffer = elem.unpack(stream, streamSize, endarg)
 				rapi.rpgBindPositionBufferOfs(fakeVertexBuffer, noesis.RPGEODATA_FLOAT, stride, 0)
-			#if elem._usage == 1:										# IG_VERTEX_USAGE_NORMAL
-			#	vnormals = elem.unpack(self.vertexBuffers[0], self.vertexStrides[0], endarg)
-			#	rapi.rpgBindNormalBufferOfs(vnormals, noesis.RPGEODATA_FLOAT, 0x10, 0x0)
-			#if elem._usage == 2:										# IG_VERTEX_USAGE_TANGENT, There's also IG_VERTEX_USAGE_BINORMAL but noesis doesn't support those
-			#	vtangents = elem.unpack(self.vertexBuffers[0], self.vertexStrides[0], endarg)
-			#	rapi.rpgBindTangentBufferOfs(vtangents, noesis.RPGEODATA_FLOAT, 0x10, 0x0)
+				indexableCount += 1
+			if elem._usage == 1:										# IG_VERTEX_USAGE_NORMAL
+				indexableCount += 1
 			if elem._usage == 4:										# IG_VERTEX_USAGE_COLOR
-				vcolors = elem.unpack(self.vertexBuffers[0], self.vertexStrides[0], endarg)
-				#fixColours(vcolors, 4, endarg)
+				vcolors = elem.unpack(stream, streamSize, endarg)
 				rapi.rpgBindColorBufferOfs(vcolors, noesis.RPGEODATA_FLOAT, 0x10, 0x0, 4)
+				indexableCount += 1
 			if elem._usage == 5:										# IG_VERTEX_USAGE_TEXCOORD
-				vtexcoords = elem.unpack(self.vertexBuffers[0], self.vertexStrides[0], endarg)
-				rapi.rpgBindUV1BufferOfs(vtexcoords, noesis.RPGEODATA_FLOAT, 0x10, 0x0)
+				vtexcoords = elem.unpack(stream, streamSize, endarg)
+				vtexcoordsn = []
+				for i in range(len(vtexcoords) // 4):
+					vtexcoord = unpack(endarg + 'f', vtexcoords[i * 4:(i + 1) * 4])[0]
+					vtexcoordsn.extend(bytes(pack(endarg + 'f', vtexcoord / elem.getElemNormaliser())))
+				rapi.rpgBindUV1BufferOfs(bytes(vtexcoordsn), noesis.RPGEODATA_FLOAT, 0x10, 0x0)
+				indexableCount += 1
 			if elem._usage == 6 and dBuildBones:						# IG_VERTEX_USAGE_BLENDWEIGHTS
-				vblendweights = elem.unpack(self.vertexBuffers[0], self.vertexStrides[0], endarg)
+				vblendweights = elem.unpack(stream, streamSize, endarg)
 				rapi.rpgBindBoneWeightBufferOfs(vblendweights, noesis.RPGEODATA_FLOAT, 0x10, 0x0, elem._count)
 			if elem._usage == 8 and dBuildBones:						# IG_VERTEX_USAGE_BLENDINDICES
-				vfblendindices = elem.unpack(self.vertexBuffers[0], self.vertexStrides[0], endarg)
+				vfblendindices = elem.unpack(stream, streamSize, endarg)
 				viblendindices = []
 				for i in range(len(vfblendindices) // 4):
 					vfblendindex = unpack(endarg + 'f', vfblendindices[i * 4:(i + 1) * 4])[0]
 					viblendindices.extend(bytes(pack(endarg + 'I', int(vfblendindex))))
 				rapi.rpgBindBoneIndexBufferOfs(bytes(viblendindices), noesis.RPGEODATA_UINT, 0x10, 0x0, elem._count)
-				#rapi.rpgBindBoneIndexBufferOfs(vfblendindices, noesis.RPGEODATA_FLOAT, 0x10, 0x0, elem._count)
-		if self.indexCount <= 0xFFFF:
-			rapi.rpgCommitTriangles(self.indexBuffer, noesis.RPGEODATA_USHORT, self.indexCount, noesis.RPGEO_TRIANGLE, 1)
-		else:
-			rapi.rpgCommitTriangles(self.indexBuffer, noesis.RPGEODATA_UINT, self.indexCount, noesis.RPGEO_TRIANGLE, 1)
 
-		rapi.rpgClearBufferBinds()
+		#rapi.rpgCommitTriangles(None, noesis.RPGEODATA_USHORT, self.vertexCount, noesis.RPGEO_POINTS, 1)
+		#rapi.rpgClearBufferBinds()
+		if self.primType != noesis.RPGEO_TRIANGLE_STRIP:
+			if self.indexCount <= 0xFFFF:
+				#print(str(self.indexBuffer))
+				rapi.rpgCommitTriangles(self.indexBuffer, noesis.RPGEODATA_USHORT, self.indexCount, self.primType, 1)
+			else:
+				rapi.rpgCommitTriangles(self.indexBuffer, noesis.RPGEODATA_UINT, self.indexCount, self.primType, 1)
+			rapi.rpgClearBufferBinds()
+		else:
+			indexStream = NoeBitStream(self.indexBuffer, NOE_BIGENDIAN)
+			processedIndicies = 0
+			processedBytes = 0
+			if self.indexCount <= 0xFF:
+				indexUnpackFunc = NoeBitStream.readUByte
+				indexSize = 1
+			else:
+				indexUnpackFunc = NoeBitStream.readUShort
+				indexSize = 2
+
+			while processedIndicies < self.indexCount:
+				indexStream.seek(processedBytes)
+				checker = indexStream.readUShort()
+				if checker != 0x9F:
+					raise RuntimeError("Check failed " + str(hex(indexStream.tell() - 2)) + " bytes into the stream")
+				indexCount = indexStream.readUShort()
+				processedBytes += 4
+				indexBuffer = []
+				for i in range(indexCount):
+					indexStream.seek(processedBytes)
+					indexBuffer.extend(pack(">I", indexUnpackFunc(indexStream)))
+					processedBytes += indexableCount * indexSize
+				processedIndicies += indexCount
+				print("Processed " + str(hex(indexStream.tell())) + " bytes." + " index size " + str(hex(indexableCount * indexSize)))
+				rapi.rpgCommitTriangles(bytes(indexBuffer), noesis.RPGEODATA_UINT, indexCount, noesis.RPGEO_TRIANGLE_STRIP, 1)
+
+			rapi.rpgClearBufferBinds()
 
 	def buildPS3Mesh(self, boneMapList, version):
 		# Ok so on PS3, there are 3 vertex buffers per igPS3EdgeGeometrySegment, they go as follows
@@ -886,7 +947,6 @@ class MeshObject(object):
 			rapi.rpgCommitTriangles(self.indexBuffer, noesis.RPGEODATA_USHORT, self.indexCount, noesis.RPGEO_TRIANGLE, 1)
 		else:
 			rapi.rpgCommitTriangles(self.indexBuffer, noesis.RPGEODATA_UINT, self.indexCount, noesis.RPGEO_TRIANGLE, 1)
-		#rapi.rpgCommitTriangles(mesh[3], noesis.RPGEODATA_USHORT, mesh[4], noesis.RPGEO_POINTS, 1)
 		
 		if self.skipBuild == False:
 			rapi.rpgClearBufferBinds()
@@ -907,7 +967,7 @@ class MeshObject(object):
 
 		vUV1 = self.buildBatchedPS3VertexBuffer(6)
 		if vUV1 != None:
-			rapi.rpgBindUV1BufferOfs(vUV1, noesis.RPGEODATA_FLOAT, 0x10, 0x00)
+			rapi.rpgBindUV2BufferOfs(vUV1, noesis.RPGEODATA_FLOAT, 0x10, 0x00)
 
 		vUV2 = self.buildBatchedPS3VertexBuffer(7)
 		if vUV2 != None:
@@ -945,7 +1005,7 @@ class MeshObject(object):
 			else:
 				valid = True
 				batchedBuffer.extend(unpackedBuffer)
-				#print("unpacking buffer, vertex count should be " + str(hex(segment.vertexCount)) + " it actually is " + str(hex(len(unpackedBuffer) // segment.vertexCount)))
+				#print("unpacking buffer, vertex count should be " + str(hex(segment.vertexCount)))
 		if valid:
 			#print("valid buffer, got " + str(hex(len(batchedBuffer))))
 			return bytes(batchedBuffer)
@@ -981,6 +1041,15 @@ class MeshObject(object):
 			fVBuf.extend(bytes(pack(endarg + "f", coord[0] / scale[0])))
 			fVBuf.extend(bytes(pack(endarg + "f", coord[1] / scale[0])))
 			fVBuf.extend(bytes(pack(endarg + "f", coord[2] / scale[0])))
+		return bytes(fVBuf)
+
+	def wiiFunkiness(self, vertexBuff, stride):
+		fVBuf = []
+		for i in range(self.vertexCount):
+			coord = unpack('>hhh', vertexBuff[i * stride+0:i * stride+6])
+			fVBuf.extend(bytes(pack(">f", coord[0] / 1024)))
+			fVBuf.extend(bytes(pack(">f", coord[1] / 1024)))
+			fVBuf.extend(bytes(pack(">f", coord[2] / 1024)))
 		return bytes(fVBuf)
 
 	def buildPS3BoneStuff(self, boneMapList):
@@ -1087,10 +1156,14 @@ class ModelObject(object):
 		self.boneMatrices = []
 		self.boneIdList = []
 		self.boneMapList = []
+		self.anims = []
 		self.id = id
 	def build(self, igz: igzFile, modelIndex):
 		index = 0
 		rapi.rpgReset()
+		if len(self.meshes) == 0:
+			print("Hi")
+			return NoeModel()
 		rapi.rpgSetOption(noesis.RPGOPT_BIGENDIAN, 1 if igz.endianness == "BE" else 0)
 		for mesh in self.meshes:
 			print("Building mesh " + str(index) + " of " + str(len(self.meshes)))
@@ -1100,6 +1173,7 @@ class ModelObject(object):
 			else:
 				mesh.buildMesh(self.boneMapList, igz.endianness, igz.version)
 			index += 1
+		print("Has " + str(len(self.boneList)))
 		try:
 			mdl = rapi.rpgConstructModel()
 			mdl.setBones(self.boneList)
@@ -1161,9 +1235,9 @@ class sscIgzFile(igzFile):
 	def process_igSkeleton2(self, bs, offset):
 		self.bitAwareSeek(bs, offset, 0x20, 0x10)
 		_inverseJointArray = self.readMemoryRef(bs)
-		self.models[-1].boneMatrices = _inverseJointArray[2]
 		print("_inverseJointArray offset: " + str(hex(_inverseJointArray[1])))
 		print("_inverseJointArray size: " + str(hex(_inverseJointArray[0])))
+		self.models[-1].boneMatrices = _inverseJointArray[2]
 		self.bitAwareSeek(bs, offset, 0x18, 0x0C)
 		_boneList = self.process_igObject(bs, self.readPointer(bs))
 
@@ -1184,6 +1258,7 @@ class sscIgzFile(igzFile):
 				mtx = mtx.inverse()
 			noebone = NoeBone(bone[2], bone[0], mtx.toMat43(), None, bone[1]-1)
 			#noebone = NoeBone(bone[2], "bone"+str(index), mtx.toMat43(), None, bone[1]-1)
+			print("Adding a bone")
 			self.models[-1].boneList.append(noebone)
 			index += 1
 	
@@ -1267,8 +1342,16 @@ class sscIgzFile(igzFile):
 		self.bitAwareSeek(bs, offset, 0x28, 0x18)
 		#print("currentposition: " + str(hex(bs.tell())))
 		_format = self.process_igObject(bs, self.readPointer(bs))
+		self.bitAwareSeek(bs, offset, 0x30, 0x20)
+		_packData = self.readMemoryRef(bs)
+
 		self.models[-1].meshes[-1].vertexBuffers.append(_data[2])
 		self.models[-1].meshes[-1].vertexStrides.append(_format)
+		if _packData[0] > 0:
+			self.models[-1].meshes[-1].packData = _packData
+			print("packData offset: " + str(hex(_packData[1])))
+			print("packData size: " + str(hex(_packData[0])))
+
 		print("vertexCount:  " + str(hex(self.models[-1].meshes[-1].vertexCount)))
 		print("vertex offset: " + str(hex(_data[1])))
 		print("vertex buf size: " + str(hex(_data[0])))
@@ -1276,9 +1359,28 @@ class sscIgzFile(igzFile):
 	def process_igVertexFormat(self, bs, offset):
 		self.bitAwareSeek(bs, offset, 0x0C, 0x08)
 		_vertexSize = bs.readUInt()
+		self.bitAwareSeek(bs, offset, 0x20, 0x1C)
+		self.models[-1].meshes[-1].platform = bs.readUInt()
+		self.models[-1].meshes[-1].platform = bs.readUInt()
+		self.bitAwareSeek(bs, offset, 0x18, 0x14)
+		self.models[-1].meshes[-1].platformData = self.readMemoryRef(bs)
 		self.bitAwareSeek(bs, offset, 0x10, 0x0C)
 		_elements = self.readMemoryRef(bs)
 		elementCount = _elements[0] // 0x0C
+		self.bitAwareSeek(bs, offset, 0x48, 0x30)
+		_streams = self.readMemoryRef(bs)
+		print("Streams offset is " + str(hex(_streams[1])))
+		if _streams[1] != 0:
+			bs.seek(_streams[1])
+			for i in range(0, _streams[0], 4):
+				self.models[-1].meshes[-1].vertexStreams.append(bs.readUInt())
+		else:
+			self.models[-1].meshes[-1].vertexStreams.append(_vertexSize)
+
+		if self.models[-1].meshes[-1].platformData[0] > 0:
+			print("platformData offset: " + str(hex(self.models[-1].meshes[-1].platformData[1])))
+			print("platformData size: " + str(hex(self.models[-1].meshes[-1].platformData[0])))
+
 		endarg = '>' if self.endianness == "BE" else '<'
 		for i in range(elementCount):
 			self.models[-1].meshes[-1].vertexElements.append(igVertexElement(_elements[2][i * 0x0C: (i + 1) * 0x0C], endarg))
@@ -1290,6 +1392,22 @@ class sscIgzFile(igzFile):
 		self.bitAwareSeek(bs, offset, 0x20, 0x14)
 		_data = self.readMemoryRefHandle(bs)
 		self.models[-1].meshes[-1].indexBuffer = _data[2]
+		self.bitAwareSeek(bs, offset, 0x30, 0x1C)
+		primType = bs.readInt()
+		if primType == 0:
+			primType = noesis.RPGEO_POINTS
+		elif primType == 3:
+			primType = noesis.RPGEO_TRIANGLE
+		elif primType == 4:
+			primType = noesis.RPGEO_TRIANGLE_STRIP
+		elif primType == 5:
+			primType = noesis.RPGEO_TRIANGLE_FAN
+		elif primType == 6:
+			primType = noesis.RPGEO_TRIANGLE_QUADS
+		else:
+			raise NotImplementedError("primitive type " + str(hex(primType)) + " is not supported.")
+		self.models[-1].meshes[-1].primType = primType
+
 		print("indexCount:   " + str(hex(self.models[-1].meshes[-1].indexCount)))
 		print("index offset: " + str(hex(_data[1])))
 		print("index buf size: " + str(hex(_data[0])))
@@ -1389,15 +1507,23 @@ sscarkRegisteredTypes = {
 class igVertexElement(object):
 	def __init__(self, data, endarg):
 		self._type = data[0]
+		self._stream = data[1]
+		self._mapToElement = data[2]
 		self._count = data[3]
-		self._usage = data[4]#IG_VERTEX_USAGE(data[4])
+		self._usage = data[4]
+		self._usageIndex = data[5]
+		self._packDataOffset = data[6]
+		self._packTypeAndFracHint = data[7]
 		self._offset = struct.unpack(endarg + 'H', data[8:10])[0]
+		self._freq = struct.unpack(endarg + 'H', data[10:12])[0]
 	def unpack(self, vertexBuffer, stride, endarg):
 		vattributes = []
 		for i in range(len(vertexBuffer) // stride):
 			attribute = sscvertexUnpackFunctions[self._type](vertexBuffer[i * stride:(i + 1) * stride], self, endarg)
 			vattributes.extend(bytes(pack(endarg + 'ffff', attribute[0], attribute[1], attribute[2], attribute[3])))
 		return bytes(vattributes)
+	def getElemNormaliser(self):
+		return vertexMaxMags[self._type]
 
 # class IG_VERTEX_USAGE(Enum):
 #	POSITION = 0
@@ -1412,63 +1538,120 @@ class igVertexElement(object):
 #	FOGCOORD = 9
 #	PSIZE = 10
 
+vertexMaxMags = [
+	1, #FLOAT1
+	1, #FLOAT2
+	1, #FLOAT3
+	1, #FLOAT4
+	1, #UBYTE4N_COLOR
+	1, #UBYTE4N_COLOR_ARGB
+	1, #UBYTE4N_COLOR_RGBA
+	1, #UNDEFINED_0
+	1, #UBYTE2N_COLOR_5650
+	1, #UBYTE2N_COLOR_5551
+	1, #UBYTE2N_COLOR_4444
+	0x7FFFFFFF, #INT1
+	0x7FFFFFFF, #INT2
+	0x7FFFFFFF, #INT4
+	0xFFFFFFFF, #UINT1
+	0xFFFFFFFF, #UINT2
+	0xFFFFFFFF, #UINT4
+	1, #INT1N
+	1, #INT2N
+	1, #INT4N
+	1, #UINT1N
+	1, #UINT2N
+	1, #UINT4N
+	0xFF, #UBYTE4
+	0xFF, #UBYTE4_X4
+	0x7F, #BYTE4
+	1, #UBYTE4N
+	1, #UNDEFINED_1
+	1, #BYTE4N
+	0x3FFF, #SHORT2, This looks wrong but for some reason it isn't
+	0x3FFF, #SHORT4, This looks wrong but for some reason it isn't
+	0xFFFF, #USHORT2
+	0xFFFF, #USHORT4
+	1, #SHORT2N
+	1, #SHORT3N
+	1, #SHORT4N
+	1, #USHORT2N
+	1, #USHORT3N
+	1, #USHORT4N
+	1, #UDEC3
+	1, #DEC3N
+	1, #DEC3N_S11_11_10
+	1, #HALF2
+	1, #HALF4
+	1, #UNUSED
+	1, #BYTE3N
+	0x7FFF, #SHORT3
+	0xFFFF, #USHORT3
+	0xFF, #UBYTE4_ENDIAN
+	0xFF, #UBYTE4_COLOR
+	0x7F, #BYTE3
+	1, #UBYTE2N_COLOR_5650_RGB
+	1, #UDEC3_OES
+	1, #DEC3N_OES
+	1, #SHORT4N_EDGE
+]
 sscvertexUnpackFunctions = [
 	unpack_FLOAT1,
 	unpack_FLOAT2,
 	unpack_FLOAT3,
 	unpack_FLOAT4,
-	unpack_UBYTE4N,    # UBYTE4N_COLOR is identical to UBYTE4N
-	unpack_UBYTE4N,    # unpack_UBYTE4N_COLOR_ARGB,
+	unpack_UBYTE4N,    # UBYTE4N_COLOR is identical to UBYTE4N	#4
+	unpack_UBYTE4N_COLOR_ARGB,
 	unpack_UBYTE4N,    # unpack_UBYTE4N_COLOR_RGBA,
 	unpack_UNDEFINED_0,# is actually the undefined one
-	unpack_UBYTE2N_COLOR_5650,
+	unpack_UBYTE2N_COLOR_5650,									#8
 	unpack_UBYTE2N_COLOR_5551,
 	unpack_UBYTE2N_COLOR_4444,
 	unpack_INT1,
-	unpack_INT2,
+	unpack_INT2,												#C
 	unpack_INT4,
 	unpack_UINT1,
 	unpack_UINT2,
-	unpack_UINT4,
+	unpack_UINT4,												#10
 	unpack_INT1N,
 	unpack_INT2N,
 	unpack_INT4N,
-	unpack_UINT1N,
+	unpack_UINT1N,												#14
 	unpack_UINT2N,
 	unpack_UINT4N,
 	unpack_UBYTE4,
-	unpack_UBYTE4_X4,
+	unpack_UBYTE4_X4,											#18
 	unpack_BYTE4,
 	unpack_UBYTE4N,
 	unpack_UNDEFINED_0,# unpack_UNDEFINED_1,
-	unpack_BYTE4N,
+	unpack_BYTE4N,												#1C
 	unpack_SHORT2,
 	unpack_SHORT4,
 	unpack_USHORT2,
-	unpack_USHORT4,
+	unpack_USHORT4,												#20
 	unpack_SHORT2N,
 	unpack_SHORT3N,
 	unpack_SHORT4N,
-	unpack_USHORT2N,
+	unpack_USHORT2N,											#24
 	unpack_USHORT3N,
 	unpack_USHORT4N,
 	unpack_UNDEFINED_0,# unpack_UDEC3,
-	unpack_UNDEFINED_0,# unpack_DEC3N,
+	unpack_UNDEFINED_0,# unpack_DEC3N,							#28
 	unpack_UNDEFINED_0,# unpack_DEC3N_S11_11_10,
 	unpack_HALF2,
 	unpack_HALF4,
-	unpack_UNUSED,     # Deceit, it's used for the vertex positions on superchargers
+	unpack_UNUSED,												#2C
 	unpack_BYTE3N,
 	unpack_SHORT3,
 	unpack_USHORT3,
-	unpack_UBYTE4_ENDIAN,
+	unpack_UBYTE4_ENDIAN,										#30
 	unpack_UBYTE4,     # unpack_UBYTE4_COLOR,
 	unpack_BYTE3,
-	unpack_UNDEFINED_0,# unpack_UBYTE2N_COLOR_5650_RGB,
-	unpack_UNDEFINED_0,# unpack_UDEC3_OES,
+	unpack_UBYTE2N_COLOR_5650,# unpack_UBYTE2N_COLOR_5650_RGB,
+	unpack_UNDEFINED_0,# unpack_UDEC3_OES,						#34
 	unpack_UNDEFINED_0,# unpack_DEC3N_OES,
 	unpack_SHORT4N,    # unpack_SHORT4N_EDGE, identical to unpack_SHORT4N, not in swap force
-	unpack_UNDEFINED_0 # unpack_MAX
+	unpack_UNDEFINED_0 # unpack_MAX								#37
 ]
 
 class ssfIgzFile(igzFile):
@@ -1531,6 +1714,7 @@ class ssfIgzFile(igzFile):
 		_geometry = self.process_igObject(bs, self.readPointer(bs))
 
 	def process_igGeometryAttr(self, bs, offset):
+		self.models[-1].meshes.append(MeshObject())
 		self.bitAwareSeek(bs, offset, 0x00, 0x10)
 		_vertexBuffer = self.process_igObject(bs, self.readPointer(bs))
 		self.bitAwareSeek(bs, offset, 0x00, 0x14)
@@ -1554,6 +1738,14 @@ class ssfIgzFile(igzFile):
 		self.models[-1].boneMapList.append(self.process_igObject(bs, self.readPointer(bs)))
 		ssfIgzFile.process_igAttrSet(self, bs, offset)
 
+	def process_igAnimation2Info(self, bs, offset):
+		self.bitAwareSeek(bs, offset, 0x00, 0x14)
+		_animationList = self.process_igObject(bs, self.readPointer(bs))
+
+	def process_igSkeleton2Info(self, bs, offset):
+		self.bitAwareSeek(bs, offset, 0x00, 0x14)
+		_skeletonList = self.process_igObject(bs, self.readPointer(bs))
+
 ssfarkRegisteredTypes = {
 	"igDataList"				:	igzFile.process_igDataList,
 	"igNamedObject"				:	igzFile.process_igNamedObject,
@@ -1570,6 +1762,7 @@ ssfarkRegisteredTypes = {
 	"igPS3EdgeGeometrySegment"	:	sscIgzFile.process_igPS3EdgeGeometrySegment,
 	"igSceneInfo"				:	ssfIgzFile.process_igSceneInfo,
 	"igGroup"					:	ssfIgzFile.process_igGroup,
+	"igActor2"					:	ssfIgzFile.process_igGroup,
 	"igTransform"				:	ssfIgzFile.process_igTransform,
 	"igFxMaterialNode"			:	ssfIgzFile.process_igFxMaterialNode,
 	"igGeometry"				:	ssfIgzFile.process_igGeometry,
@@ -1583,6 +1776,13 @@ ssfarkRegisteredTypes = {
 	"igAttrSet"					:	ssfIgzFile.process_igAttrSet,
 	"igBlendMatrixSelect"		:	ssfIgzFile.process_igBlendMatrixSelect,
 	"igIntList"					:	igzFile.process_igIntList,
+
+	#Lost Islands Exclusive Types
+
+	"igSkeleton2Info"			: 	ssfIgzFile.process_igSkeleton2Info,
+	"igSkeleton2List"			: 	ssfIgzFile.process_igObjectList,
+	"igAnimation2Info"			: 	ssfIgzFile.process_igAnimation2Info,
+	"igAnimation2List"			: 	ssfIgzFile.process_igObjectList,
 }
 
 class sttIgzFile(igzFile):
@@ -1600,8 +1800,8 @@ class sttIgzFile(igzFile):
 		_tfbBody = self.process_igObject(bs, self.readPointer(bs))
 
 	def process_tfbPhysicsBody(self, bs, offset):
-		doesModelExist = self.addModel(offset)
-		if doesModelExist == True:
+		isModelNew = self.addModel(offset)
+		if isModelNew == True:
 			self.bitAwareSeek(bs, offset, 0x00, 0x28)
 			_combinerPrototype = self.process_igObject(bs, self.readPointer(bs))
 			if self.platform == 0x0B:
