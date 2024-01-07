@@ -7,6 +7,7 @@ dFirstObjectOffset = -1		# Offset of the first object to process, -1 means just 
 dBuildMeshes = True			# Whether or not to build the meshes, or just parse the file, useful for debugging specific models on trap team or giants
 dBuildBones = True			# Whether or not to build the bones
 dModelThreshold = 50		# The highest number of models to extract before the user is prompted with which models to extract
+dAllowWii = False			# whether or not to allow wii models
 
 def registerNoesisTypes():
 	igzHandle = noesis.register("Skylanders Superchargers", ".igz;.bld")
@@ -36,7 +37,9 @@ def alchemyigzLoadModel(data, mdlList):
 
 	version = bs.readUInt()
 
-	if version == 0x06:
+	if version == 0x05:
+		parser = ssaIgzFile(data)
+	elif version == 0x06:
 		parser = sgIgzFile(data)
 	elif version == 0x07:
 		parser = ssfIgzFile(data)
@@ -48,6 +51,10 @@ def alchemyigzLoadModel(data, mdlList):
 		raise NotImplementedError("Version " + str(hex(version)) + " is unsupported.")
 
 	parser.loadFile()
+
+	print("platform ", parser.platform, ", is wii allowed? ", dAllowWii)
+	if parser.platform == 2 and not dAllowWii:
+		raise Exception("Wii Models are not allowed as they are buggy, if you'd like to try them anyways, edit dAllowWii to \"True\" in fmt_alchemy_igz.py and restart noesis")
 
 	if dBuildMeshes:
 		parser.buildMeshes(mdlList)
@@ -798,10 +805,15 @@ class MeshObject(object):
 		if len(boneMapList) != 0 and len(boneMapList[self.boneMapIndex]) != 0 and dBuildBones:
 			rapi.rpgSetBoneMap(boneMapList[self.boneMapIndex])
 
+		processedElements = [False] * 11
 		indexableCount = 0
 		for elem in self.vertexElements:
 			if elem._type == 0x2C:
 				continue
+
+			if processedElements[elem._usage]:
+				continue
+			processedElements[elem._usage] = True
 
 			streamOffset = 0
 			for i in range(elem._stream):
@@ -812,6 +824,7 @@ class MeshObject(object):
 
 			print("usage: " + str(hex(elem._usage)) + "; offset: " + str(hex(elem._offset)) + "; stream: " + str(hex(elem._stream)) + "; count: " + str(hex(elem._count)) + "; type: " + str(hex(elem._type)) + "; mapToElement: " + str(hex(elem._mapToElement)) + "; usageIndex: " + str(hex(elem._usageIndex)) + "; packDataOffset: " + str(hex(elem._packDataOffset)) + "; packTypeAndFracHint: " + str(hex(elem._packTypeAndFracHint)) + "; freq: " + str(hex(elem._freq)) + "; streamOffset: " + str(hex(streamOffset)))
 
+			
 			if elem._usage == 0:										# IG_VERTEX_USAGE_POSITION
 				shouldScaleDown = len(self.vertexStreams) > 0
 				stride = 0x10
@@ -883,7 +896,7 @@ class MeshObject(object):
 					indexBuffer.extend(pack(">I", indexUnpackFunc(indexStream)))
 					processedBytes += indexableCount * indexSize
 				processedIndicies += indexCount
-				print("Processed " + str(hex(indexStream.tell())) + " bytes." + " index size " + str(hex(indexableCount * indexSize)))
+				#print("Processed " + str(hex(indexStream.tell())) + " bytes." + " index size " + str(hex(indexableCount * indexSize)))
 				rapi.rpgCommitTriangles(bytes(indexBuffer), noesis.RPGEODATA_UINT, indexCount, noesis.RPGEO_TRIANGLE_STRIP, 1)
 
 			rapi.rpgClearBufferBinds()
@@ -981,7 +994,7 @@ class MeshObject(object):
 		if vColour != None:
 			rapi.rpgBindColorBufferOfs(vColour, noesis.RPGEODATA_FLOAT, 0x10, 0x00, 4)
 
-		if dBuildBones and len(boneMapList) > 0:
+		if dBuildBones and len(boneMapList) > 0 and len(boneMapList[self.boneMapIndex]) > 0:
 			rapi.rpgSetBoneMap(boneMapList[self.boneMapIndex])
 
 			boneBuffers = self.buildBatchedPs3BoneBuffers()
@@ -1359,15 +1372,14 @@ class sscIgzFile(igzFile):
 	def process_igVertexFormat(self, bs, offset):
 		self.bitAwareSeek(bs, offset, 0x0C, 0x08)
 		_vertexSize = bs.readUInt()
-		self.bitAwareSeek(bs, offset, 0x20, 0x1C)
+		self.bitAwareSeek(bs, offset, 0x30, 0x1C)
 		self.models[-1].meshes[-1].platform = bs.readUInt()
-		self.models[-1].meshes[-1].platform = bs.readUInt()
-		self.bitAwareSeek(bs, offset, 0x18, 0x14)
+		self.bitAwareSeek(bs, offset, 0x20, 0x14)
 		self.models[-1].meshes[-1].platformData = self.readMemoryRef(bs)
 		self.bitAwareSeek(bs, offset, 0x10, 0x0C)
 		_elements = self.readMemoryRef(bs)
 		elementCount = _elements[0] // 0x0C
-		self.bitAwareSeek(bs, offset, 0x48, 0x30)
+		self.bitAwareSeek(bs, offset, 0x58, 0x30)
 		_streams = self.readMemoryRef(bs)
 		print("Streams offset is " + str(hex(_streams[1])))
 		if _streams[1] != 0:
@@ -1965,6 +1977,76 @@ sgarkRegisteredTypes = {
 	"tfbWorldEntityInfo"			:	sttIgzFile.process_tfbEntityInfo,
 	"tfbActorInfo"					:	sgIgzFile.process_tfbActorInfo,
 	"igBlendMatrixSelect"			:	ssfIgzFile.process_igBlendMatrixSelect,
+	"igIntList"						:	igzFile.process_igIntList,
+	"tfbRuntimeTechniqueInstance"	:	sgIgzFile.process_tfbRuntimeTechniqueInstance
+}
+
+class ssaIgzFile(igzFile):
+	def __init__(self, data):
+		igzFile.__init__(self, data)
+		self.is64Bit = ssaIgzFile.is64BitCall
+		self.arkRegisteredTypes = ssaarkRegisteredTypes
+
+	def is64BitCall(self) -> bool:
+		platformbittness = []
+
+		# Idk if this is correct
+		platformbittness.append(False)		# IG_CORE_PLATFORM_DEFAULT
+		platformbittness.append(False)		# IG_CORE_PLATFORM_WIN32
+		platformbittness.append(False)		# IG_CORE_PLATFORM_WII
+		platformbittness.append(True)		# IG_CORE_PLATFORM_DEPRECATED
+		platformbittness.append(False)		# IG_CORE_PLATFORM_ASPEN
+		platformbittness.append(False)		# IG_CORE_PLATFORM_XENON
+		platformbittness.append(False)		# IG_CORE_PLATFORM_PS3
+		platformbittness.append(False)		# IG_CORE_PLATFORM_OSX
+		platformbittness.append(True)		# IG_CORE_PLATFORM_WIN64
+		platformbittness.append(False)		# IG_CORE_PLATFORM_CAFE
+		platformbittness.append(False)		# IG_CORE_PLATFORM_NGP
+		platformbittness.append(False)		# IG_CORE_PLATFORM_ANDROID
+		platformbittness.append(False)		# IG_CORE_PLATFORM_MARMALADE
+		platformbittness.append(False)		# IG_CORE_PLATFORM_MAX
+
+		return platformbittness[self.platform]
+
+	def process_igBlendMatrixSelect(self, bs, offset):
+		self.bitAwareSeek(bs, offset, 0x00, 0xB0)
+		self.models[-1].boneMapList.append(self.process_igObject(bs, self.readPointer(bs)))
+		ssfIgzFile.process_igAttrSet(self, bs, offset)
+
+ssaarkRegisteredTypes = {
+	"igDataList"					:	igzFile.process_igDataList,
+	"igNamedObject"					:	igzFile.process_igNamedObject,
+	"igObjectList"					:	igzFile.process_igObjectList,
+	"igSkeleton2"					:	sscIgzFile.process_igSkeleton2,
+	"igSkeletonBoneList"			:	sscIgzFile.process_igSkeletonBoneList,
+	"igSkeletonBone"				:	sscIgzFile.process_igSkeletonBone,
+	"igGraphicsVertexBuffer"		:	sscIgzFile.process_igGraphicsVertexBuffer,
+	"igGraphicsIndexBuffer"			:	sscIgzFile.process_igGraphicsIndexBuffer,
+	"igVertexBuffer"				:	sscIgzFile.process_igVertexBuffer,
+	"igVertexFormat"				:	sscIgzFile.process_igVertexFormat,
+	"igIndexBuffer"					:	sscIgzFile.process_igIndexBuffer,
+	"igPS3EdgeGeometry"				:	sscIgzFile.process_igPS3EdgeGeometry,
+	"igPS3EdgeGeometrySegment"		:	sscIgzFile.process_igPS3EdgeGeometrySegment,
+	"igEdgeGeometryAttr"			:	sgIgzFile.process_igEdgeGeometryAttr,
+	"igGeometryAttr"				:	ssfIgzFile.process_igGeometryAttr,
+	"igWiiGeometryAttr"				:	ssfIgzFile.process_igGeometryAttr,
+	"igFxMaterialNode"				:	ssfIgzFile.process_igGroup,
+	"igActor2"						:	ssfIgzFile.process_igGroup,
+	"igGroup"						:	ssfIgzFile.process_igGroup,
+	"igNodeList"					:	ssfIgzFile.process_igObjectList,
+	"tfbSpriteInfo"					:	sgIgzFile.process_tfbSpriteInfo,
+	"tfbPhysicsModel"				:	sttIgzFile.process_tfbPhysicsModel,
+	"tfbPhysicsBody"				:	sgIgzFile.process_tfbPhysicsBody,
+	"tfbBodyEntityInfo"				:	sttIgzFile.process_tfbEntityInfo,
+	"DrawableList"					:	sttIgzFile.process_igObjectList,
+	"Drawable"						:	sttIgzFile.process_Drawable,
+	"tfbPhysicsWorld"				:	sgIgzFile.process_tfbPhysicsWorld,
+	"igSceneInfo"					:	ssfIgzFile.process_igSceneInfo,
+	"igSpatialNode"					:	ssfIgzFile.process_igGroup,
+	"tfbPhysicsCombinerLink"		:	sttIgzFile.process_tfbPhysicsCombinerLink,
+	"tfbWorldEntityInfo"			:	sttIgzFile.process_tfbEntityInfo,
+	"tfbActorInfo"					:	sgIgzFile.process_tfbActorInfo,
+	"igBlendMatrixSelect"			:	ssaIgzFile.process_igBlendMatrixSelect,
 	"igIntList"						:	igzFile.process_igIntList,
 	"tfbRuntimeTechniqueInstance"	:	sgIgzFile.process_tfbRuntimeTechniqueInstance
 }
