@@ -535,10 +535,11 @@ def unpack_UBYTE4N_COLOR_ARGB(data, element, endarg):
 	return [color[1], color[2], color[3], color[0]]
 def unpack_UBYTE2N_COLOR_5650(data, element, endarg):
 	color = unpack(endarg + 'H', data[element._offset:element._offset + 2])[0]
-	return [((color >> 11) & 31) / 31, ((color >> 5) & 63) / 63, (color >> 0) / 31, 1]
+	#return [((color >> 11) & 31) / 31, ((color >> 5) & 63) / 63, (color >> 0) / 31, 1]
+	return [((color >> 11) & 31) / 31, ((color >> 5) & 63) / 63, (color & 31) / 31, 1]
 def unpack_UBYTE2N_COLOR_5551(data, element, endarg):
 	color = unpack(endarg + 'H', data[element._offset:element._offset + 2])
-	return [(color & 31) / 31, ((color >> 5) & 31) / 31, ((color >> 10) & 31) / 31, color >> 15]
+	return [(color & 31) / 31, ((color >> 5) & 31) / 31, ((color >> 10) & 31) / 31, (color >> 15) & 1]
 def unpack_UBYTE2N_COLOR_4444(data, element, endarg):
 	color = unpack(endarg + 'H', data[element._offset:element._offset + 2])
 	return [(color & 15) / 15, ((color >> 4) & 15) / 15, ((color >> 8) & 15) / 15, ((color >> 12) & 15) / 15]
@@ -826,37 +827,33 @@ class MeshObject(object):
 
 			
 			if elem._usage == 0:										# IG_VERTEX_USAGE_POSITION
-				shouldScaleDown = len(self.vertexStreams) > 0
 				stride = 0x10
 				if elem._type == 0x23:
 					fakeVertexBuffer = self.superchargersFunkiness(endarg)
 					stride = 0x0C
-				elif elem._type == 0x2E and shouldScaleDown:
-					fakeVertexBuffer = self.wiiFunkiness(stream, streamSize)
-					stride = 0x0C
 				else:
-					fakeVertexBuffer = elem.unpack(stream, streamSize, endarg)
+					fakeVertexBuffer = elem.unpack(stream, streamSize, self.packData, endarg)
 				rapi.rpgBindPositionBufferOfs(fakeVertexBuffer, noesis.RPGEODATA_FLOAT, stride, 0)
 				indexableCount += 1
 			if elem._usage == 1:										# IG_VERTEX_USAGE_NORMAL
 				indexableCount += 1
 			if elem._usage == 4:										# IG_VERTEX_USAGE_COLOR
-				vcolors = elem.unpack(stream, streamSize, endarg)
+				vcolors = elem.unpack(stream, streamSize, self.packData, endarg)
 				rapi.rpgBindColorBufferOfs(vcolors, noesis.RPGEODATA_FLOAT, 0x10, 0x0, 4)
 				indexableCount += 1
 			if elem._usage == 5:										# IG_VERTEX_USAGE_TEXCOORD
-				vtexcoords = elem.unpack(stream, streamSize, endarg)
+				vtexcoords = elem.unpack(stream, streamSize, self.packData, endarg)
 				vtexcoordsn = []
 				for i in range(len(vtexcoords) // 4):
 					vtexcoord = unpack(endarg + 'f', vtexcoords[i * 4:(i + 1) * 4])[0]
-					vtexcoordsn.extend(bytes(pack(endarg + 'f', vtexcoord / elem.getElemNormaliser())))
+					vtexcoordsn.extend(bytes(pack(endarg + 'f', vtexcoord)))
 				rapi.rpgBindUV1BufferOfs(bytes(vtexcoordsn), noesis.RPGEODATA_FLOAT, 0x10, 0x0)
 				indexableCount += 1
 			if elem._usage == 6 and dBuildBones:						# IG_VERTEX_USAGE_BLENDWEIGHTS
-				vblendweights = elem.unpack(stream, streamSize, endarg)
+				vblendweights = elem.unpack(stream, streamSize, self.packData, endarg)
 				rapi.rpgBindBoneWeightBufferOfs(vblendweights, noesis.RPGEODATA_FLOAT, 0x10, 0x0, elem._count)
 			if elem._usage == 8 and dBuildBones:						# IG_VERTEX_USAGE_BLENDINDICES
-				vfblendindices = elem.unpack(stream, streamSize, endarg)
+				vfblendindices = elem.unpack(stream, streamSize, self.packData, endarg)
 				viblendindices = []
 				for i in range(len(vfblendindices) // 4):
 					vfblendindex = unpack(endarg + 'f', vfblendindices[i * 4:(i + 1) * 4])[0]
@@ -1056,7 +1053,7 @@ class MeshObject(object):
 			fVBuf.extend(bytes(pack(endarg + "f", coord[2] / scale[0])))
 		return bytes(fVBuf)
 
-	def wiiFunkiness(self, vertexBuff, stride):
+	def handlePackData(self, vertexBuff, stride):
 		fVBuf = []
 		for i in range(self.vertexCount):
 			coord = unpack('>hhh', vertexBuff[i * stride+0:i * stride+6])
@@ -1355,15 +1352,17 @@ class sscIgzFile(igzFile):
 		self.bitAwareSeek(bs, offset, 0x28, 0x18)
 		#print("currentposition: " + str(hex(bs.tell())))
 		_format = self.process_igObject(bs, self.readPointer(bs))
-		self.bitAwareSeek(bs, offset, 0x30, 0x20)
-		_packData = self.readMemoryRef(bs)
-
 		self.models[-1].meshes[-1].vertexBuffers.append(_data[2])
 		self.models[-1].meshes[-1].vertexStrides.append(_format)
-		if _packData[0] > 0:
-			self.models[-1].meshes[-1].packData = _packData
-			print("packData offset: " + str(hex(_packData[1])))
-			print("packData size: " + str(hex(_packData[0])))
+
+		if self.version >= 0x06:
+			self.bitAwareSeek(bs, offset, 0x30, 0x20)
+			_packData = self.readMemoryRef(bs)
+
+			if _packData[0] > 0:
+				self.models[-1].meshes[-1].packData = _packData
+				print("packData offset: " + str(hex(_packData[1])))
+				print("packData size: " + str(hex(_packData[0])))
 
 		print("vertexCount:  " + str(hex(self.models[-1].meshes[-1].vertexCount)))
 		print("vertex offset: " + str(hex(_data[1])))
@@ -1528,11 +1527,18 @@ class igVertexElement(object):
 		self._packTypeAndFracHint = data[7]
 		self._offset = struct.unpack(endarg + 'H', data[8:10])[0]
 		self._freq = struct.unpack(endarg + 'H', data[10:12])[0]
-	def unpack(self, vertexBuffer, stride, endarg):
+	def unpack(self, vertexBuffer, stride, packData, endarg):
 		vattributes = []
+
+		scale = 1
+		if (self._packTypeAndFracHint & 7) == 2 and packData != None:
+			scale /= 1 << unpack(endarg + 'I', bytes(packData[2][self._packDataOffset:self._packDataOffset + 4]))[0]
+			print("scale is 1 / " + str(1 / scale))
+
 		for i in range(len(vertexBuffer) // stride):
 			attribute = sscvertexUnpackFunctions[self._type](vertexBuffer[i * stride:(i + 1) * stride], self, endarg)
-			vattributes.extend(bytes(pack(endarg + 'ffff', attribute[0], attribute[1], attribute[2], attribute[3])))
+			vattributes.extend(bytes(pack(endarg + 'ffff', attribute[0] * scale, attribute[1] * scale, attribute[2] * scale, attribute[3])))
+
 		return bytes(vattributes)
 	def getElemNormaliser(self):
 		return vertexMaxMags[self._type]
