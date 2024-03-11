@@ -3,11 +3,12 @@ from struct import pack
 from inc_noesis import *
 
 #Debug Settings
+#dFirstObjectOffset = 0xae24		# Offset of the first object to process, -1 means just loop through every object
 dFirstObjectOffset = -1		# Offset of the first object to process, -1 means just loop through every object
 dBuildMeshes = True			# Whether or not to build the meshes, or just parse the file, useful for debugging specific models on trap team or giants
 dBuildBones = True			# Whether or not to build the bones
 dModelThreshold = 50		# The highest number of models to extract before the user is prompted with which models to extract
-dAllowWii = False			# whether or not to allow wii models
+dAllowWii = True			# whether or not to allow wii models
 
 def registerNoesisTypes():
 	igzHandle = noesis.register("Skylanders Superchargers", ".igz;.bld")
@@ -806,15 +807,26 @@ class MeshObject(object):
 		if len(boneMapList) != 0 and len(boneMapList[self.boneMapIndex]) != 0 and dBuildBones:
 			rapi.rpgSetBoneMap(boneMapList[self.boneMapIndex])
 
-		processedElements = [False] * 11
-		indexableCount = 0
+		if version >= 6:
+			packData = self.packData[2] if self.packData != None else None
+		else:
+			packDataOffset = 0
+			for elem in self.vertexElements:
+				if elem._type == 0x2C:
+					continue
+				print("processing... " + str(elem._packDataOffset))
+				if (elem._packTypeAndFracHint & 7) == 2:
+					if packDataOffset < elem._packDataOffset:
+						packDataOffset = elem._packDataOffset
+			packData = bytes(self.vertexBuffers[0][len(self.vertexBuffers[0]) - packDataOffset - 4:])
+			print(packData)
+			print(packDataOffset)
+
+		uvAccum = 0
+		uvUsages = []
 		for elem in self.vertexElements:
 			if elem._type == 0x2C:
 				continue
-
-			if processedElements[elem._usage]:
-				continue
-			processedElements[elem._usage] = True
 
 			streamOffset = 0
 			for i in range(elem._stream):
@@ -824,7 +836,6 @@ class MeshObject(object):
 			streamSize = self.vertexStreams[elem._stream]
 
 			print("usage: " + str(hex(elem._usage)) + "; offset: " + str(hex(elem._offset)) + "; stream: " + str(hex(elem._stream)) + "; count: " + str(hex(elem._count)) + "; type: " + str(hex(elem._type)) + "; mapToElement: " + str(hex(elem._mapToElement)) + "; usageIndex: " + str(hex(elem._usageIndex)) + "; packDataOffset: " + str(hex(elem._packDataOffset)) + "; packTypeAndFracHint: " + str(hex(elem._packTypeAndFracHint)) + "; freq: " + str(hex(elem._freq)) + "; streamOffset: " + str(hex(streamOffset)))
-
 			
 			if elem._usage == 0:										# IG_VERTEX_USAGE_POSITION
 				stride = 0x10
@@ -832,28 +843,32 @@ class MeshObject(object):
 					fakeVertexBuffer = self.superchargersFunkiness(endarg)
 					stride = 0x0C
 				else:
-					fakeVertexBuffer = elem.unpack(stream, streamSize, self.packData, endarg)
+					fakeVertexBuffer = elem.unpack(stream, streamSize, packData, endarg)
 				rapi.rpgBindPositionBufferOfs(fakeVertexBuffer, noesis.RPGEODATA_FLOAT, stride, 0)
-				indexableCount += 1
+				#indexableCount += 1
 			if elem._usage == 1:										# IG_VERTEX_USAGE_NORMAL
-				indexableCount += 1
+				vnormals = elem.unpack(stream, streamSize, packData, endarg)
+				rapi.rpgBindNormalBufferOfs(vnormals, noesis.RPGEODATA_FLOAT, 0x10, 0x0, 3)
 			if elem._usage == 4:										# IG_VERTEX_USAGE_COLOR
-				vcolors = elem.unpack(stream, streamSize, self.packData, endarg)
+				vcolors = elem.unpack(stream, streamSize, packData, endarg)
 				rapi.rpgBindColorBufferOfs(vcolors, noesis.RPGEODATA_FLOAT, 0x10, 0x0, 4)
-				indexableCount += 1
+				#indexableCount += 1
 			if elem._usage == 5:										# IG_VERTEX_USAGE_TEXCOORD
-				vtexcoords = elem.unpack(stream, streamSize, self.packData, endarg)
+				vtexcoords = elem.unpack(stream, streamSize, packData, endarg)
 				vtexcoordsn = []
 				for i in range(len(vtexcoords) // 4):
 					vtexcoord = unpack(endarg + 'f', vtexcoords[i * 4:(i + 1) * 4])[0]
 					vtexcoordsn.extend(bytes(pack(endarg + 'f', vtexcoord)))
-				rapi.rpgBindUV1BufferOfs(bytes(vtexcoordsn), noesis.RPGEODATA_FLOAT, 0x10, 0x0)
-				indexableCount += 1
+				rapi.rpgBindUVXBufferOfs(bytes(vtexcoordsn), noesis.RPGEODATA_FLOAT, 0x10, uvAccum, 2, 0x0)
+				print(str(uvUsages))
+				if elem._usageIndex not in uvUsages:
+					#indexableCount += 1
+					uvUsages.append(elem._usageIndex)
 			if elem._usage == 6 and dBuildBones:						# IG_VERTEX_USAGE_BLENDWEIGHTS
-				vblendweights = elem.unpack(stream, streamSize, self.packData, endarg)
+				vblendweights = elem.unpack(stream, streamSize, packData, endarg)
 				rapi.rpgBindBoneWeightBufferOfs(vblendweights, noesis.RPGEODATA_FLOAT, 0x10, 0x0, elem._count)
 			if elem._usage == 8 and dBuildBones:						# IG_VERTEX_USAGE_BLENDINDICES
-				vfblendindices = elem.unpack(stream, streamSize, self.packData, endarg)
+				vfblendindices = elem.unpack(stream, streamSize, packData, endarg)
 				viblendindices = []
 				for i in range(len(vfblendindices) // 4):
 					vfblendindex = unpack(endarg + 'f', vfblendindices[i * 4:(i + 1) * 4])[0]
@@ -879,6 +894,16 @@ class MeshObject(object):
 			else:
 				indexUnpackFunc = NoeBitStream.readUShort
 				indexSize = 2
+
+			indexableCount = 0
+			platformDataStream = NoeBitStream(bytes(self.platformData[2]), NOE_BIGENDIAN)
+			readInt = 0
+			while readInt != 0xFF:
+				platformDataStream.seek(0x10 * indexableCount)
+				readInt = platformDataStream.readUInt()
+				indexableCount += 1
+
+			indexableCount -= 1
 
 			while processedIndicies < self.indexCount:
 				indexStream.seek(processedBytes)
@@ -1183,6 +1208,8 @@ class ModelObject(object):
 			else:
 				mesh.buildMesh(self.boneMapList, igz.endianness, igz.version)
 			index += 1
+			if index == 10:
+				break
 		print("Has " + str(len(self.boneList)))
 		try:
 			mdl = rapi.rpgConstructModel()
@@ -1380,11 +1407,11 @@ class sscIgzFile(igzFile):
 		elementCount = _elements[0] // 0x0C
 		self.bitAwareSeek(bs, offset, 0x58, 0x30)
 		_streams = self.readMemoryRef(bs)
-		print("Streams offset is " + str(hex(_streams[1])))
 		if _streams[1] != 0:
 			bs.seek(_streams[1])
 			for i in range(0, _streams[0], 4):
 				self.models[-1].meshes[-1].vertexStreams.append(bs.readUInt())
+			print(hex(len(self.models[-1].meshes[-1].vertexStreams)) + " streams at " + hex(_streams[1]))
 		else:
 			self.models[-1].meshes[-1].vertexStreams.append(_vertexSize)
 
@@ -1527,18 +1554,26 @@ class igVertexElement(object):
 		self._packTypeAndFracHint = data[7]
 		self._offset = struct.unpack(endarg + 'H', data[8:10])[0]
 		self._freq = struct.unpack(endarg + 'H', data[10:12])[0]
-	def unpack(self, vertexBuffer, stride, packData, endarg):
+	def unpack(self, vertexBuffer, stride, packData, endarg, debugPrint=False):
 		vattributes = []
 
 		scale = 1
+		#if (self._packTypeAndFracHint & 7) == 2 and packData == None:
+		#	raise RuntimeError("pack data failed to be read")
 		if (self._packTypeAndFracHint & 7) == 2 and packData != None:
-			scale /= 1 << unpack(endarg + 'I', bytes(packData[2][self._packDataOffset:self._packDataOffset + 4]))[0]
+			scale /= 1 << unpack(endarg + 'I', bytes(packData[self._packDataOffset:self._packDataOffset + 4]))[0]
 			print("scale is 1 / " + str(1 / scale))
 
+		magnitude = 0
 		for i in range(len(vertexBuffer) // stride):
 			attribute = sscvertexUnpackFunctions[self._type](vertexBuffer[i * stride:(i + 1) * stride], self, endarg)
+			if debugPrint:
+				print((attribute))
+				if magnitude < (attribute[0]*attribute[0] + attribute[1]*attribute[1] + attribute[2]*attribute[2]):
+					magnitude = (attribute[0]*attribute[0] + attribute[1]*attribute[1] + attribute[2]*attribute[2])
 			vattributes.extend(bytes(pack(endarg + 'ffff', attribute[0] * scale, attribute[1] * scale, attribute[2] * scale, attribute[3])))
-
+		if debugPrint:
+			print("magnitude: ", str(magnitude*(scale*scale)))
 		return bytes(vattributes)
 	def getElemNormaliser(self):
 		return vertexMaxMags[self._type]
