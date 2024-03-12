@@ -1208,8 +1208,6 @@ class ModelObject(object):
 			else:
 				mesh.buildMesh(self.boneMapList, igz.endianness, igz.version)
 			index += 1
-			if index == 10:
-				break
 		print("Has " + str(len(self.boneList)))
 		try:
 			mdl = rapi.rpgConstructModel()
