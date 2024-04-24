@@ -3,7 +3,7 @@ from struct import pack
 from inc_noesis import *
 
 #Debug Settings
-#dFirstObjectOffset = 0xae24		# Offset of the first object to process, -1 means just loop through every object
+#dFirstObjectOffset = 0x6d30	# Offset of the first object to process, -1 means just loop through every object
 dFirstObjectOffset = -1		# Offset of the first object to process, -1 means just loop through every object
 dBuildMeshes = True			# Whether or not to build the meshes, or just parse the file, useful for debugging specific models on trap team or giants
 dBuildBones = True			# Whether or not to build the bones
@@ -23,6 +23,7 @@ def alchemyigzCheckType(data):
 	if magic == 0x015A4749 or magic == 0x49475A01:
 		return 1
 	print("Invalid IGZ")
+	return 0
 
 def alchemyigzLoadModel(data, mdlList):
 	ctx = rapi.rpgCreateContext()
@@ -258,13 +259,13 @@ class igzFile(object):
 			if magic == 0x52545354 or magic == 1:
 				for j in range(count):
 					self.stringList.append(bs.readString())
-					if self.version >= 0x09 and bs.tell() % 2 != 0:
+					if self.version >= 0x07 and bs.tell() % 2 != 0:
 						bs.seek(1, NOESEEK_REL)
 					print("stringList[" + str(hex(j)) + "]: " + self.stringList[j])
 			if magic == 0x54454D54 or magic == 0:
 				for j in range(count):
 					self.metatypes.append(bs.readString())
-					if self.version >= 0x08 and bs.tell() % 2 != 0:
+					if self.version >= 0x07 and bs.tell() % 2 != 0:
 						bs.seek(1, NOESEEK_REL)
 					print("metatypes[" + str(hex(j)) + "]: " + self.metatypes[j])
 			if magic == 0x4E484D54 or magic == 10:
@@ -462,6 +463,37 @@ def unpack_USHORT3N(data, element, endarg):
 def unpack_USHORT4N(data, element, endarg):
 	USHORTs = unpack(endarg + 'HHHH', data[element._offset:element._offset + 8])
 	return [float(USHORTs[0]) / 0xFFFF, float(USHORTs[1]) / 0xFFFF, float(USHORTs[2]) / 0xFFFF, float(USHORTs[3]) / 0xFFFF]
+
+def unpack_UDEC3(data, element, endarg):
+	raw = unpack(endarg + "I", data[element._offset:element._offset + 4])[0]
+	return [float(raw & 0x3FF), float((raw >> 10) & 0x3FF), float((raw >> 20) & 0x3FF), 1.0]
+def unpack_UDEC3_OES(data, element, endarg):
+	raw = unpack(endarg + "I", data[element._offset:element._offset + 4])[0]
+	return [float(raw >> 22), float((raw >> 12) & 0x3FF), float((raw >> 2) & 0x3FF), 1.0]
+def unpack_DEC3N(data, element, endarg):
+	raw = unpack(endarg + "I", data[element._offset:element._offset + 4])[0]
+	return [
+		float((((raw >>  0) & 0x1FF) / 511.0) * (1 if (raw >>  0) & 0x200 == 0 else -1)),
+		float((((raw >> 10) & 0x1FF) / 511.0) * (1 if (raw >> 10) & 0x200 == 0 else -1)),
+		float((((raw >> 20) & 0x1FF) / 511.0) * (1 if (raw >> 20) & 0x200 == 0 else -1)),
+		1.0
+	]
+def unpack_DEC3N_OES(data, element, endarg):
+	raw = unpack(endarg + "I", data[element._offset:element._offset + 4])[0]
+	return [
+		float((((raw >>  2) & 0x1FF) / 511.0) * (1 if (raw >>  2) & 0x200 == 0 else -1)),
+		float((((raw >> 12) & 0x1FF) / 511.0) * (1 if (raw >> 12) & 0x200 == 0 else -1)),
+		float((((raw >> 22) & 0x1FF) / 511.0) * (1 if (raw >> 22) & 0x200 == 0 else -1)),
+		1.0
+	]
+def unpack_DEC3N_S11_11_10(data, element, endarg):
+	raw = unpack(endarg + "I", data[element._offset:element._offset + 4])[0]
+	return [
+		float((((raw >>  0) & 0x3FF) / 1023.0) * (1 if (raw >>  0) & 0x400 == 0 else -1)),
+		float((((raw >> 11) & 0x3FF) / 1023.0) * (1 if (raw >> 11) & 0x400 == 0 else -1)),
+		float((((raw >> 22) & 0x1FF) /  511.0) * (1 if (raw >> 22) & 0x200 == 0 else -1)),
+		1.0
+	]
 
 # you make me sad
 
@@ -789,7 +821,7 @@ class MeshObject(object):
 		self.packData = None
 		self.platform = 0
 		self.platformData = None
-	def buildMesh(self, boneMapList, endianness, version):
+	def buildMesh(self, boneMapList, endianness, version, platform):
 		rapi.rpgSetName(self.name)
 
 		endarg = '>' if endianness == "BE" else '<'
@@ -807,6 +839,8 @@ class MeshObject(object):
 		if len(boneMapList) != 0 and len(boneMapList[self.boneMapIndex]) != 0 and dBuildBones:
 			rapi.rpgSetBoneMap(boneMapList[self.boneMapIndex])
 
+		if platform == 2:
+			self.vertexBuffers[0] = bytes(self.vertexBuffers[0][4:])
 		if version >= 6:
 			packData = self.packData[2] if self.packData != None else None
 		else:
@@ -1206,7 +1240,7 @@ class ModelObject(object):
 			if mesh.isPs3 == True:
 				mesh.buildPs3MeshNew(self.boneMapList, igz.version)
 			else:
-				mesh.buildMesh(self.boneMapList, igz.endianness, igz.version)
+				mesh.buildMesh(self.boneMapList, igz.endianness, igz.version, igz.platform)
 			index += 1
 		print("Has " + str(len(self.boneList)))
 		try:
@@ -1566,9 +1600,10 @@ class igVertexElement(object):
 		for i in range(len(vertexBuffer) // stride):
 			attribute = sscvertexUnpackFunctions[self._type](vertexBuffer[i * stride:(i + 1) * stride], self, endarg)
 			if debugPrint:
+				currMag = (attribute[0]*attribute[0] + attribute[1]*attribute[1] + attribute[2]*attribute[2])
 				print((attribute))
-				if magnitude < (attribute[0]*attribute[0] + attribute[1]*attribute[1] + attribute[2]*attribute[2]):
-					magnitude = (attribute[0]*attribute[0] + attribute[1]*attribute[1] + attribute[2]*attribute[2])
+				if magnitude < currMag:
+					magnitude = currMag
 			vattributes.extend(bytes(pack(endarg + 'ffff', attribute[0] * scale, attribute[1] * scale, attribute[2] * scale, attribute[3])))
 		if debugPrint:
 			print("magnitude: ", str(magnitude*(scale*scale)))
@@ -1686,9 +1721,9 @@ sscvertexUnpackFunctions = [
 	unpack_USHORT2N,											#24
 	unpack_USHORT3N,
 	unpack_USHORT4N,
-	unpack_UNDEFINED_0,# unpack_UDEC3,
-	unpack_UNDEFINED_0,# unpack_DEC3N,							#28
-	unpack_UNDEFINED_0,# unpack_DEC3N_S11_11_10,
+	unpack_UDEC3,# unpack_UDEC3,
+	unpack_DEC3N,# unpack_DEC3N,							#28
+	unpack_DEC3N_S11_11_10,# unpack_DEC3N_S11_11_10,
 	unpack_HALF2,
 	unpack_HALF4,
 	unpack_UNUSED,												#2C
@@ -1699,8 +1734,8 @@ sscvertexUnpackFunctions = [
 	unpack_UBYTE4,     # unpack_UBYTE4_COLOR,
 	unpack_BYTE3,
 	unpack_UBYTE2N_COLOR_5650,# unpack_UBYTE2N_COLOR_5650_RGB,
-	unpack_UNDEFINED_0,# unpack_UDEC3_OES,						#34
-	unpack_UNDEFINED_0,# unpack_DEC3N_OES,
+	unpack_UDEC3_OES,# unpack_UDEC3_OES,						#34
+	unpack_DEC3N_OES,# unpack_DEC3N_OES,
 	unpack_SHORT4N,    # unpack_SHORT4N_EDGE, identical to unpack_SHORT4N, not in swap force
 	unpack_UNDEFINED_0 # unpack_MAX								#37
 ]
@@ -1751,7 +1786,7 @@ class ssfIgzFile(igzFile):
 		self.process_igGroup(bs, offset)
 
 	def process_igGeometry(self, bs, offset):
-		self.process_igGroup(bs, offset)
+		ssfIgzFile.process_igGroup(self, bs, offset)
 		self.bitAwareSeek(bs, offset, 0x00, 0x24)
 		mesh = MeshObject()
 		if self.models[-1].boneMapList != None and len(self.models[-1].boneMapList) > 0:
@@ -1855,7 +1890,7 @@ class sttIgzFile(igzFile):
 		if isModelNew == True:
 			self.bitAwareSeek(bs, offset, 0x00, 0x28)
 			_combinerPrototype = self.process_igObject(bs, self.readPointer(bs))
-			if self.platform == 0x0B:
+			if self.platform == 0x0B or self.platform == 0x04:
 				bs.seek(offset + 0x20, NOESEEK_ABS)
 			else:
 				self.bitAwareSeek(bs, offset, 0x00, 0x30)
@@ -1892,8 +1927,16 @@ class sttIgzFile(igzFile):
 		_skeleton = self.process_igObject(bs, self.readPointer(bs))
 
 	def process_tfbActorInfo(self, bs, offset):
-		self.bitAwareSeek(bs, offset, 0x00, 0xEC)
+		if self.platform != 0x04:
+			self.bitAwareSeek(bs, offset, 0x00, 0xEC)
+		else:
+			self.bitAwareSeek(bs, offset, 0x00, 0xEC)
 		_model = self.process_igObject(bs, self.readPointer(bs))
+	
+	def process_tfbMobileLodGeometry(self, bs, offset):
+		ssfIgzFile.process_igGeometry(self, bs, offset)
+		self.bitAwareSeek(bs, offset, 0x00, 0x2C)
+		_lodAttrs = self.process_igObject(bs, self.readPointer(bs));
 
 sttarkRegisteredTypes = {
 	"igDataList"				:	igzFile.process_igDataList,
@@ -1926,6 +1969,16 @@ sttarkRegisteredTypes = {
 	"tfbPhysicsCombinerLink"	:	sttIgzFile.process_tfbPhysicsCombinerLink,
 	"tfbWorldEntityInfo"		:	sttIgzFile.process_tfbEntityInfo,
 	"tfbActorInfo"				:	sttIgzFile.process_tfbActorInfo,
+
+	#STT iOS exclusive types
+
+	"igActor2"					:	ssfIgzFile.process_igGroup,
+	"tfbPointLightPicker"		:	ssfIgzFile.process_igGroup,
+	"igBlendMatrixSelect"		:	ssfIgzFile.process_igBlendMatrixSelect,
+	"tfbMobileLodGeometry"		:	sttIgzFile.process_tfbMobileLodGeometry,
+	"igAttrList"				:	igzFile.process_igObjectList,
+	"igGroup"					:	ssfIgzFile.process_igGroup,
+	"igGeometry"				:	ssfIgzFile.process_igGeometry
 }
 
 class sgIgzFile(igzFile):
