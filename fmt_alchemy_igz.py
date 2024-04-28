@@ -3,7 +3,7 @@ from struct import pack
 from inc_noesis import *
 
 #Debug Settings
-#dFirstObjectOffset = 0x6d30	# Offset of the first object to process, -1 means just loop through every object
+#dFirstObjectOffset = 0x5b7a8	# Offset of the first object to process, -1 means just loop through every object
 dFirstObjectOffset = -1		# Offset of the first object to process, -1 means just loop through every object
 dBuildMeshes = True			# Whether or not to build the meshes, or just parse the file, useful for debugging specific models on trap team or giants
 dBuildBones = True			# Whether or not to build the bones
@@ -259,13 +259,13 @@ class igzFile(object):
 			if magic == 0x52545354 or magic == 1:
 				for j in range(count):
 					self.stringList.append(bs.readString())
-					if self.version >= 0x07 and bs.tell() % 2 != 0:
+					if self.version > 0x07 and bs.tell() % 2 != 0:
 						bs.seek(1, NOESEEK_REL)
 					print("stringList[" + str(hex(j)) + "]: " + self.stringList[j])
 			if magic == 0x54454D54 or magic == 0:
 				for j in range(count):
 					self.metatypes.append(bs.readString())
-					if self.version >= 0x07 and bs.tell() % 2 != 0:
+					if self.version > 0x07 and bs.tell() % 2 != 0:
 						bs.seek(1, NOESEEK_REL)
 					print("metatypes[" + str(hex(j)) + "]: " + self.metatypes[j])
 			if magic == 0x4E484D54 or magic == 10:
@@ -835,7 +835,6 @@ class MeshObject(object):
 		print("name:           " + self.name)
 		print("bone map index: " + str(hex(self.boneMapIndex)))
 
-
 		if len(boneMapList) != 0 and len(boneMapList[self.boneMapIndex]) != 0 and dBuildBones:
 			rapi.rpgSetBoneMap(boneMapList[self.boneMapIndex])
 
@@ -952,7 +951,7 @@ class MeshObject(object):
 					indexBuffer.extend(pack(">I", indexUnpackFunc(indexStream)))
 					processedBytes += indexableCount * indexSize
 				processedIndicies += indexCount
-				#print("Processed " + str(hex(indexStream.tell())) + " bytes." + " index size " + str(hex(indexableCount * indexSize)))
+				print("Processed " + str(hex(processedBytes)) + " bytes." + " index size " + str(hex(indexableCount * indexSize)) + " buffer " + str(indexBuffer))
 				rapi.rpgCommitTriangles(bytes(indexBuffer), noesis.RPGEODATA_UINT, indexCount, noesis.RPGEO_TRIANGLE_STRIP, 1)
 
 			rapi.rpgClearBufferBinds()
@@ -1800,7 +1799,7 @@ class ssfIgzFile(igzFile):
 		_geometry = self.process_igObject(bs, self.readPointer(bs))
 
 	def process_igGeometryAttr(self, bs, offset):
-		self.models[-1].meshes.append(MeshObject())
+		#self.models[-1].meshes.append(MeshObject())
 		self.bitAwareSeek(bs, offset, 0x00, 0x10)
 		_vertexBuffer = self.process_igObject(bs, self.readPointer(bs))
 		self.bitAwareSeek(bs, offset, 0x00, 0x14)
