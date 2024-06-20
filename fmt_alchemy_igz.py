@@ -7,6 +7,7 @@ from inc_noesis import *
 dFirstObjectOffset = -1		# Offset of the first object to process, -1 means just loop through every object
 dBuildMeshes = True			# Whether or not to build the meshes, or just parse the file, useful for debugging specific models on trap team or giants
 dBuildBones = True			# Whether or not to build the bones
+dBuildFaces = True			# whether or not to build the index buffer
 dModelThreshold = 50		# The highest number of models to extract before the user is prompted with which models to extract
 dAllowWii = True			# whether or not to allow wii models
 
@@ -838,7 +839,7 @@ class MeshObject(object):
 		if len(boneMapList) != 0 and len(boneMapList[self.boneMapIndex]) != 0 and dBuildBones:
 			rapi.rpgSetBoneMap(boneMapList[self.boneMapIndex])
 
-		if platform == 2:
+		if platform == 2 and struct.unpack(">H", self.vertexBuffers[0][0:2])[0] == 0x9F:	# This is a hack
 			self.vertexBuffers[0] = bytes(self.vertexBuffers[0][4:])
 		if version >= 6:
 			packData = self.packData[2] if self.packData != None else None
@@ -852,8 +853,6 @@ class MeshObject(object):
 					if packDataOffset < elem._packDataOffset:
 						packDataOffset = elem._packDataOffset
 			packData = bytes(self.vertexBuffers[0][len(self.vertexBuffers[0]) - packDataOffset - 4:])
-			print(packData)
-			print(packDataOffset)
 
 		uvAccum = 0
 		uvUsages = []
@@ -908,9 +907,10 @@ class MeshObject(object):
 					viblendindices.extend(bytes(pack(endarg + 'I', int(vfblendindex))))
 				rapi.rpgBindBoneIndexBufferOfs(bytes(viblendindices), noesis.RPGEODATA_UINT, 0x10, 0x0, elem._count)
 
-		#rapi.rpgCommitTriangles(None, noesis.RPGEODATA_USHORT, self.vertexCount, noesis.RPGEO_POINTS, 1)
-		#rapi.rpgClearBufferBinds()
-		if self.primType != noesis.RPGEO_TRIANGLE_STRIP:
+		if not dBuildFaces:
+			rapi.rpgCommitTriangles(None, noesis.RPGEODATA_USHORT, self.vertexCount, noesis.RPGEO_POINTS, 1)
+			rapi.rpgClearBufferBinds()
+		elif self.primType != noesis.RPGEO_TRIANGLE_STRIP:
 			if self.indexCount <= 0xFFFF:
 				#print(str(self.indexBuffer))
 				rapi.rpgCommitTriangles(self.indexBuffer, noesis.RPGEODATA_USHORT, self.indexCount, self.primType, 1)
@@ -921,7 +921,7 @@ class MeshObject(object):
 			indexStream = NoeBitStream(self.indexBuffer, NOE_BIGENDIAN)
 			processedIndicies = 0
 			processedBytes = 0
-			if self.indexCount <= 0xFF:
+			if self.indexCount < 0xFF:
 				indexUnpackFunc = NoeBitStream.readUByte
 				indexSize = 1
 			else:
@@ -1799,7 +1799,7 @@ class ssfIgzFile(igzFile):
 		_geometry = self.process_igObject(bs, self.readPointer(bs))
 
 	def process_igGeometryAttr(self, bs, offset):
-		#self.models[-1].meshes.append(MeshObject())
+		self.models[-1].meshes.append(MeshObject())
 		self.bitAwareSeek(bs, offset, 0x00, 0x10)
 		_vertexBuffer = self.process_igObject(bs, self.readPointer(bs))
 		self.bitAwareSeek(bs, offset, 0x00, 0x14)
