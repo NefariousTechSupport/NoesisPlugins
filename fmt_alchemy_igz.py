@@ -347,6 +347,7 @@ def unpack_FLOAT2(data, element, endarg):
 	return [floats[0], floats[1], 0.0, 1.0]
 def unpack_FLOAT3(data, element, endarg):
 	floats = unpack(endarg + 'fff', data[element._offset:element._offset + 12])
+	print(str(floats))
 	return [floats[0], floats[1], floats[2], 1.0]
 def unpack_FLOAT4(data, element, endarg):
 	floats = unpack(endarg + 'ffff', data[element._offset:element._offset + 16])
@@ -1831,6 +1832,29 @@ class ssfIgzFile(igzFile):
 		self.bitAwareSeek(bs, offset, 0x00, 0x14)
 		_skeletonList = self.process_igObject(bs, self.readPointer(bs))
 
+# SSA Wii U "forward declarations"
+
+	def process_tfbSpriteInfo(self, bs, offset):
+		sgIgzFile.process_tfbSpriteInfo(self, bs, offset)
+	def process_tfbPhysicsModel(self, bs, offset):
+		sttIgzFile.process_tfbPhysicsModel(self, bs, offset)
+	def process_tfbPhysicsBody(self, bs, offset):
+		sgIgzFile.process_tfbPhysicsBody(self, bs, offset)
+	def process_tfbEntityInfo(self, bs, offset):
+		sttIgzFile.process_tfbEntityInfo(self, bs, offset)
+	def process_Drawable(self, bs, offset):
+		sttIgzFile.process_Drawable(self, bs, offset)
+	def process_tfbPhysicsWorld(self, bs, offset):
+		sgIgzFile.process_tfbPhysicsWorld(self, bs, offset)
+	def process_tfbPhysicsCombinerLink(self, bs, offset):
+		sttIgzFile.process_tfbPhysicsCombinerLink(self, bs, offset)
+	def process_tfbEntityInfo(self, bs, offset):
+		sttIgzFile.process_tfbEntityInfo(self, bs, offset)
+	def process_tfbActorInfo(self, bs, offset):
+		sgIgzFile.process_tfbActorInfo(self, bs, offset)
+	def process_tfbRuntimeTechniqueInstance(self, bs, offset):
+		sgIgzFile.process_tfbRuntimeTechniqueInstance(self, bs, offset)
+
 ssfarkRegisteredTypes = {
 	"igDataList"				:	igzFile.process_igDataList,
 	"igNamedObject"				:	igzFile.process_igNamedObject,
@@ -1868,6 +1892,21 @@ ssfarkRegisteredTypes = {
 	"igSkeleton2List"			: 	ssfIgzFile.process_igObjectList,
 	"igAnimation2Info"			: 	ssfIgzFile.process_igAnimation2Info,
 	"igAnimation2List"			: 	ssfIgzFile.process_igObjectList,
+
+	#SSA Wii U
+
+	"tfbSpriteInfo"					:	ssfIgzFile.process_tfbSpriteInfo,
+	"tfbPhysicsModel"				:	ssfIgzFile.process_tfbPhysicsModel,
+	"tfbPhysicsBody"				:	ssfIgzFile.process_tfbPhysicsBody,
+	"tfbBodyEntityInfo"				:	ssfIgzFile.process_tfbEntityInfo,
+	"DrawableList"					:	ssfIgzFile.process_igObjectList,
+	"Drawable"						:	ssfIgzFile.process_Drawable,
+	"tfbPhysicsWorld"				:	ssfIgzFile.process_tfbPhysicsWorld,
+	"igSpatialNode"					:	ssfIgzFile.process_igGroup,
+	"tfbPhysicsCombinerLink"		:	ssfIgzFile.process_tfbPhysicsCombinerLink,
+	"tfbWorldEntityInfo"			:	ssfIgzFile.process_tfbEntityInfo,
+	"tfbActorInfo"					:	ssfIgzFile.process_tfbActorInfo,
+	"tfbRuntimeTechniqueInstance"	:	ssfIgzFile.process_tfbRuntimeTechniqueInstance
 }
 
 class sttIgzFile(igzFile):
