@@ -855,8 +855,6 @@ class MeshObject(object):
 						packDataOffset = elem._packDataOffset
 			packData = bytes(self.vertexBuffers[0][len(self.vertexBuffers[0]) - packDataOffset - 4:])
 
-		uvAccum = 0
-		uvUsages = []
 		for elem in self.vertexElements:
 			if elem._type == 0x2C:
 				continue
@@ -886,17 +884,13 @@ class MeshObject(object):
 				vcolors = elem.unpack(stream, streamSize, packData, endarg)
 				rapi.rpgBindColorBufferOfs(vcolors, noesis.RPGEODATA_FLOAT, 0x10, 0x0, 4)
 				#indexableCount += 1
-			if elem._usage == 5:										# IG_VERTEX_USAGE_TEXCOORD
+			if elem._usage == 5 and elem._usageIndex == 0:				# IG_VERTEX_USAGE_TEXCOORD
 				vtexcoords = elem.unpack(stream, streamSize, packData, endarg)
 				vtexcoordsn = []
 				for i in range(len(vtexcoords) // 4):
 					vtexcoord = unpack(endarg + 'f', vtexcoords[i * 4:(i + 1) * 4])[0]
 					vtexcoordsn.extend(bytes(pack(endarg + 'f', vtexcoord)))
-				rapi.rpgBindUVXBufferOfs(bytes(vtexcoordsn), noesis.RPGEODATA_FLOAT, 0x10, uvAccum, 2, 0x0)
-				print(str(uvUsages))
-				if elem._usageIndex not in uvUsages:
-					#indexableCount += 1
-					uvUsages.append(elem._usageIndex)
+				rapi.rpgBindUV0BufferOfs(bytes(vtexcoordsn), noesis.RPGEODATA_FLOAT, 0x10, 0, 2, 0x0)
 			if elem._usage == 6 and dBuildBones:						# IG_VERTEX_USAGE_BLENDWEIGHTS
 				vblendweights = elem.unpack(stream, streamSize, packData, endarg)
 				rapi.rpgBindBoneWeightBufferOfs(vblendweights, noesis.RPGEODATA_FLOAT, 0x10, 0x0, elem._count)
