@@ -890,7 +890,7 @@ class MeshObject(object):
 				for i in range(len(vtexcoords) // 4):
 					vtexcoord = unpack(endarg + 'f', vtexcoords[i * 4:(i + 1) * 4])[0]
 					vtexcoordsn.extend(bytes(pack(endarg + 'f', vtexcoord)))
-				rapi.rpgBindUV0BufferOfs(bytes(vtexcoordsn), noesis.RPGEODATA_FLOAT, 0x10, 0, 2, 0x0)
+				rapi.rpgBindUV1BufferOfs(bytes(vtexcoordsn), noesis.RPGEODATA_FLOAT, 0x10, 0, 2, 0x0)
 			if elem._usage == 6 and dBuildBones:						# IG_VERTEX_USAGE_BLENDWEIGHTS
 				vblendweights = elem.unpack(stream, streamSize, packData, endarg)
 				rapi.rpgBindBoneWeightBufferOfs(vblendweights, noesis.RPGEODATA_FLOAT, 0x10, 0x0, elem._count)
