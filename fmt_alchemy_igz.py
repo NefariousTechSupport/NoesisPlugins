@@ -50,13 +50,15 @@ def alchemyigzLoadModel(data, mdlList):
 		parser = sttIgzFile(data)
 	elif version == 0x09:
 		parser = sscIgzFile(data)
+	elif version == 0x0A:
+		parser = nstIgzFile(data)
 	else:
 		raise NotImplementedError("Version " + str(hex(version)) + " is unsupported.")
 
 	parser.loadFile()
 
 	print("platform ", parser.platform, ", is wii allowed? ", dAllowWii)
-	if parser.platform == 2 and not dAllowWii:
+	if parser.version < 0x0A and parser.platform == 2 and not dAllowWii:
 		raise Exception("Wii Models are not allowed as they are buggy, if you'd like to try them anyways, edit dAllowWii to \"True\" in fmt_alchemy_igz.py and restart noesis")
 
 	if dBuildMeshes:
@@ -324,6 +326,7 @@ class igzFile(object):
 		if self.is64Bit(self):
 			pointerSize = 8
 		returns = []
+		print("found " + str(dataList[0]) + " objects from offset "+ str(hex(offset)))
 		for i in range(dataList[0]):
 			bs.seek(dataList[2][1] + i * pointerSize, NOESEEK_ABS)
 			returns.append(self.process_igObject(bs, self.readPointer(bs)))
@@ -347,7 +350,6 @@ def unpack_FLOAT2(data, element, endarg):
 	return [floats[0], floats[1], 0.0, 1.0]
 def unpack_FLOAT3(data, element, endarg):
 	floats = unpack(endarg + 'fff', data[element._offset:element._offset + 12])
-	print(str(floats))
 	return [floats[0], floats[1], floats[2], 1.0]
 def unpack_FLOAT4(data, element, endarg):
 	floats = unpack(endarg + 'ffff', data[element._offset:element._offset + 16])
@@ -906,8 +908,7 @@ class MeshObject(object):
 			rapi.rpgCommitTriangles(None, noesis.RPGEODATA_USHORT, self.vertexCount, noesis.RPGEO_POINTS, 1)
 			rapi.rpgClearBufferBinds()
 		elif self.primType != noesis.RPGEO_TRIANGLE_STRIP:
-			if self.indexCount <= 0xFFFF:
-				#print(str(self.indexBuffer))
+			if self.vertexCount <= 0xFFFF:
 				rapi.rpgCommitTriangles(self.indexBuffer, noesis.RPGEODATA_USHORT, self.indexCount, self.primType, 1)
 			else:
 				rapi.rpgCommitTriangles(self.indexBuffer, noesis.RPGEODATA_UINT, self.indexCount, self.primType, 1)
@@ -2173,4 +2174,104 @@ ssaarkRegisteredTypes = {
 	"igBlendMatrixSelect"			:	ssaIgzFile.process_igBlendMatrixSelect,
 	"igIntList"						:	igzFile.process_igIntList,
 	"tfbRuntimeTechniqueInstance"	:	sgIgzFile.process_tfbRuntimeTechniqueInstance
+}
+
+class nstIgzFile(igzFile):
+	def __init__(self, data):
+		igzFile.__init__(self, data)
+		self.is64Bit = nstIgzFile.is64BitCall
+		self.arkRegisteredTypes = nstarkRegisteredTypes
+
+	def is64BitCall(self) -> bool:
+		return True
+	
+	def process_igDataList(self, bs, offset):
+		self.bitAwareSeek(bs, offset, 0x10, 0x08)
+		_count		= bs.readUInt()
+		_capacity	= bs.readUInt()
+		self.bitAwareSeek(bs, offset, 0x18, 0x10)
+		_data = self.readMemoryRef(bs)
+		return (_count, _capacity, _data)
+
+	def process_igVertexBuffer(self, bs, offset):
+		self.bitAwareSeek(bs, offset, 0x10, 0x00)
+		self.models[-1].meshes[-1].vertexCount = bs.readUInt()
+		self.bitAwareSeek(bs, offset, 0x28, 0x00)
+		_data = self.readMemoryRef(bs)
+		self.bitAwareSeek(bs, offset, 0x38, 0x18)
+		#print("currentposition: " + str(hex(bs.tell())))
+		_format = self.process_igObject(bs, self.readPointer(bs))
+		self.models[-1].meshes[-1].vertexBuffers.append(_data[2])
+		self.models[-1].meshes[-1].vertexStrides.append(_format)
+
+		print("vertexCount:  " + str(hex(self.models[-1].meshes[-1].vertexCount)))
+		print("vertex offset: " + str(hex(_data[1])))
+		print("vertex buf size: " + str(hex(_data[0])))
+
+	def process_igIndexBuffer(self, bs, offset):
+		self.bitAwareSeek(bs, offset, 0x10, 0x08)
+		self.models[-1].meshes[-1].indexCount = bs.readUInt()
+		self.bitAwareSeek(bs, offset, 0x28, 0x14)
+		_data = self.readMemoryRef(bs)
+		self.models[-1].meshes[-1].indexBuffer = _data[2]
+		self.bitAwareSeek(bs, offset, 0x40, 0x1C)
+		primType = bs.readInt()
+		if primType == 0:
+			primType = noesis.RPGEO_POINTS
+		elif primType == 3:
+			primType = noesis.RPGEO_TRIANGLE
+		elif primType == 4:
+			primType = noesis.RPGEO_TRIANGLE_STRIP
+		elif primType == 5:
+			primType = noesis.RPGEO_TRIANGLE_FAN
+		elif primType == 6:
+			primType = noesis.RPGEO_TRIANGLE_QUADS
+		else:
+			raise NotImplementedError("primitive type " + str(hex(primType)) + " is not supported.")
+		self.models[-1].meshes[-1].primType = primType
+
+		print("indexCount:   " + str(hex(self.models[-1].meshes[-1].indexCount)))
+		print("index offset: " + str(hex(_data[1])))
+		print("index buf size: " + str(hex(_data[0])))
+
+	def process_igGraphicsVertexBuffer(self, bs, offset):
+		self.bitAwareSeek(bs, offset, 0x20, 0x0C)
+		_vertexBuffer = self.process_igObject(bs, self.readPointer(bs))
+
+	def process_igGraphicsIndexBuffer(self, bs, offset):
+		self.bitAwareSeek(bs, offset, 0x20, 0x0C)
+		_indexBuffer = self.process_igObject(bs, self.readPointer(bs))
+
+	def process_igVertexFormat(self, bs, offset):
+		self.bitAwareSeek(bs, offset, 0x10, 0x08)
+		_vertexSize = bs.readUInt()
+		self.models[-1].meshes[-1].platform = 8
+		self.models[-1].meshes[-1].platformData = None
+		self.bitAwareSeek(bs, offset, 0x18, 0x0C)
+		_elements = self.readMemoryRef(bs)
+		elementCount = _elements[0] // 0x0C
+
+		self.models[-1].meshes[-1].vertexStreams.append(_vertexSize)
+
+		for i in range(elementCount):
+			self.models[-1].meshes[-1].vertexElements.append(igVertexElement(_elements[2][i * 0x0C: (i + 1) * 0x0C], '<'))
+
+		return _vertexSize
+
+nstarkRegisteredTypes = {
+	"igDataList"					:	nstIgzFile.process_igDataList,
+	"igNamedObject"					:	igzFile.process_igNamedObject,
+	"igObjectList"					:	igzFile.process_igObjectList,
+	"igSkeleton2"					:	sscIgzFile.process_igSkeleton2,
+	"igSkeletonBoneList"			:	sscIgzFile.process_igSkeletonBoneList,
+	"igSkeletonBone"				:	sscIgzFile.process_igSkeletonBone,
+	"CGraphicsSkinInfo"				:	sscIgzFile.process_CGraphicsSkinInfo,
+	"igModelInfo"					:	sscIgzFile.process_igModelInfo,
+	"igModelData"					:	sscIgzFile.process_igModelData,
+	"igModelDrawCallData"			:	sscIgzFile.process_igModelDrawCallData,
+	"igGraphicsVertexBuffer"		:	nstIgzFile.process_igGraphicsVertexBuffer,
+	"igGraphicsIndexBuffer"			:	nstIgzFile.process_igGraphicsIndexBuffer,
+	"igVertexBuffer"				:	nstIgzFile.process_igVertexBuffer,
+	"igVertexFormat"				:	nstIgzFile.process_igVertexFormat,
+	"igIndexBuffer"					:	nstIgzFile.process_igIndexBuffer,
 }
