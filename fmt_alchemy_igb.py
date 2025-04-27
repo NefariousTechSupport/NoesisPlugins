@@ -1433,6 +1433,13 @@ class igVec3fList(igDataList):
 	def assignNames(names):
 		pass
 
+class igVec4ucList(igDataList):
+	def __init__(self, meta):
+		super(igVec4ucList, self).__init__(meta)
+
+	def assignNames(names):
+		pass
+
 class igVec2fList(igDataList):
 	def __init__(self, meta):
 		super(igVec2fList, self).__init__(meta)
@@ -2023,6 +2030,11 @@ class igVertexData(igNamedObject):
 			data = self._data._data._data
 			dataFmt = noesis.RPGEODATA_UBYTE
 			dataStride = 0x01
+		if isinstance(self._data, igVec4ucList):
+			for vec4 in self._data:
+				data.extend(pack("<BBBB", int(vec4[0]), int(vec4[1]), int(vec4[2]), int(vec4[3])))
+			dataFmt = noesis.RPGEODATA_UBYTE
+			dataStride = 0x04
 		data = bytes(data)
 
 		if self._componentType == IG_VERTEX_COMPONENT_POSITION:
