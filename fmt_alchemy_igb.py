@@ -1,6 +1,9 @@
 from inc_noesis import *
 from struct import pack
 
+# Debug settings
+dVerboseLogs = False
+
 get_class = lambda x: globals()[x]
 
 IG_GFX_TEXTURE_FORMAT_INVALID = -1
@@ -1348,10 +1351,11 @@ class igObject(__internalObjectBase):
 
 			setattr(self, attributeName, attributeValue)
 
-			if isinstance(attributeValue, str):
-				print(attributeName + ": \"" + attributeValue + "\"")
-			else:
-				print(attributeName + ": " + str(attributeValue))
+			if dVerboseLogs:
+				if isinstance(attributeValue, str):
+					print(attributeName + ": \"" + attributeValue + "\"")
+				else:
+					print(attributeName + ": " + str(attributeValue))
 
 		bs.seek(offset + size)
 		return size
