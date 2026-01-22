@@ -535,9 +535,12 @@ def unpack_UBYTE2(data, element, endarg):
 def unpack_UBYTE3(data, element, endarg):
 	return [float(data[element._offset + 0]), float(data[element._offset + 1]), float(data[element._offset + 2]), 1.0]
 def unpack_UBYTE4(data, element, endarg):
-	return [float(data[element._offset + 0]), float(data[element._offset + 1]), float(data[element._offset + 2]), float(data[element._offset + 3])]
+	uintRep = unpack(endarg + 'I', data[element._offset:element._offset + 4])[0]
+	return [float(uintRep & 0xFF), float((uintRep >> 8) & 0xFF), float((uintRep >> 16) & 0xFF), float((uintRep >> 24) & 0xFF)]
 def unpack_UBYTE4_ENDIAN(data, element, endarg):
-	return [float(data[element._offset + 3]), float(data[element._offset + 2]), float(data[element._offset + 1]), float(data[element._offset + 0])]
+	# Flip the endianness
+	uintRep = unpack('<' if endarg == '>' else '<' + 'I', data[element._offset:element._offset + 4])[0]
+	return [float(uintRep & 0xFF), float((uintRep >> 8) & 0xFF), float((uintRep >> 16) & 0xFF), float((uintRep >> 24) & 0xFF)]
 def unpack_UBYTE1N(data, element, endarg):
 	return [float(data[element._offset + 0] / 0xFF), 0.0, 0.0, 1.0]
 def unpack_UBYTE2N(data, element, endarg):
@@ -545,7 +548,8 @@ def unpack_UBYTE2N(data, element, endarg):
 def unpack_UBYTE3N(data, element, endarg):
 	return [float(data[element._offset + 0] / 0xFF), float(data[element._offset + 1] / 0xFF), float(data[element._offset + 2] / 0xFF), 1.0]
 def unpack_UBYTE4N(data, element, endarg):
-	return [float(data[element._offset + 0]) / 0xFF, float(data[element._offset + 1]) / 0xFF, float(data[element._offset + 2]) / 0xFF, float(data[element._offset + 3]) / 0xFF]
+	uintRep = unpack(endarg + 'I', data[element._offset:element._offset + 4])[0]
+	return [float(uintRep & 0xFF) / 0xFF, float((uintRep >> 8) & 0xFF) / 0xFF, float((uintRep >> 16) & 0xFF) / 0xFF, float((uintRep >> 24) & 0xFF) / 0xFF]
 
 def unpack_UBYTE4_X4(data, element, endarg):
 	return [float(data[element._offset + 0] * 0.25), float(data[element._offset + 1] * 0.25), float(data[element._offset + 2] * 0.25), float(data[element._offset + 3] * 0.25)]
