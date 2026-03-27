@@ -311,7 +311,7 @@ def igbLoadModelInternal(data, mdlList):
 				rapi.rpgSetName(skin._name)
 
 				noemdlmats = NoeModelMaterials([], [])
-				if isinstance(skin._skinnedGraph, igBlendMatrixSelect):
+				if isinstance(skin._skinnedGraph, igAttrSet):
 					#skin._skinnedGraph._childList.debugPrint()
 					#skin._skinnedGraph._attributes.debugPrint()
 					for attr in skin._skinnedGraph._attributes:
@@ -320,18 +320,21 @@ def igbLoadModelInternal(data, mdlList):
 							noemat = NoeMaterial(noetex.name, noetex.name)
 							noemdlmats.texList.append(noetex)
 							noemdlmats.matList.append(noemat)
-					boneMap = []
-					for blendIndex in skin._skinnedGraph._blendMatrixIndicies:
-						boneMap.append(blendIndex)
-					rapi.rpgSetBoneMap(boneMap)
+
+					if isinstance(skin._skinnedGraph, igBlendMatrixSelect):
+						boneMap = []
+						for blendIndex in skin._skinnedGraph._blendMatrixIndicies:
+							boneMap.append(blendIndex)
+						rapi.rpgSetBoneMap(boneMap)
+
 					for child in skin._skinnedGraph._childList:
 						if isinstance(child, igGeometry):
 							for attribute in child._attributes:
 								if isinstance(attribute, igGeometryAttr2):
 									attribute.buildModel()
-						elif isinstance(child, igSegment):
+						elif isinstance(child, igGroup): # Typically is an igSegment
 							for segChild in child._childList:
-								if isinstance(segChild, igAttrSet):
+								if isinstance(segChild, igGroup): # Typically is an igAttrSet
 									for attrSetChild in segChild._childList:
 										if isinstance(attrSetChild, igGeometry):
 											for attribute in attrSetChild._attributes:
@@ -1681,7 +1684,9 @@ class igImage(igObject):
 		h = self._py
 		texFmt = noesis.NOESISTEX_RGBA32
 		data = bytes(self._pImage._data)
-		if self._pfmt == IG_GFX_TEXTURE_FORMAT_RGBA_DXT1:
+		if self._pfmt == IG_GFX_TEXTURE_FORMAT_RGBA_8888_32:
+			data = rapi.imageDecodeRaw(data, self._px, self._py, "r8g8b8a8")
+		elif self._pfmt == IG_GFX_TEXTURE_FORMAT_RGBA_DXT1:
 			data = rapi.imageDecodeDXT(data, self._px, self._py, noesis.FOURCC_DXT1)
 			data = rapi.imageFlipRGBA32(data, w, h, 0, 1)
 		elif self._pfmt == IG_GFX_TEXTURE_FORMAT_RGBA_DXT3:
@@ -1691,7 +1696,7 @@ class igImage(igObject):
 			data = rapi.imageDecodeDXT(data, self._px, self._py, noesis.FOURCC_DXT5)
 			data = rapi.imageFlipRGBA32(data, w, h, 0, 1)
 		else:
-			raise Exception("Unsupported texture format " + str(hex(self._pfmt)) + " expected" + str(hex(IG_GFX_TEXTURE_FORMAT_RGBA_DXT1)))
+			raise Exception("Unsupported texture format " + str(hex(self._pfmt)))
 
 		if self._order == IG_GFX_IMAGE_ORDER_DEFAULT:
 			data = rapi.swapEndianArray(data, 3, 0, 4)
@@ -1883,7 +1888,7 @@ class igGeometryAttr2(igDrawableAttr):
 		#rapi.rpgReset()
 		print("Building model")
 		self._vertexArray.buildVertexBuffers()
-		self._indexArray.buildIndexBuffer(self._primType)
+		self._indexArray.buildIndexBuffer(self._primType, self._stripLengths)
 		rapi.rpgSetMaterial("material")
 		rapi.rpgClearBufferBinds()
 
@@ -2055,6 +2060,16 @@ class igVertexData(igNamedObject):
 			rapi.rpgBindBoneWeightBufferOfs(data, dataFmt, dataStride * self._componentSize, 0, self._componentSize)
 		elif self._componentType == IG_VERTEX_COMPONENT_INDEX:
 			rapi.rpgBindBoneIndexBufferOfs(data, dataFmt, dataStride * self._componentSize, 0, self._componentSize)
+		elif self._componentType == IG_VERTEX_COMPONENT_STREAM_XENON:
+			rapi.rpgSetOption(noesis.RPGOPT_BIGENDIAN, 1)
+			unk00, numVerts, dataStride, attrLength = struct.unpack_from(">IIII", data, 0)
+			vertData = bytes(data[0x10+attrLength:])
+			for head in range(0, attrLength, 0x0C):
+				stream, offset, unk04, usage, usageIndex = struct.unpack_from(">HHIHH", data, 0x10 + head)
+				if usage == 0:
+					rapi.rpgBindPositionBufferOfs(vertData, noesis.RPGEODATA_FLOAT, dataStride, offset)
+				elif usage == 5:
+					rapi.rpgBindUV1BufferOfs(vertData, noesis.RPGEODATA_FLOAT, dataStride, offset)
 
 
 class igIndexArray(igObject):
@@ -2072,11 +2087,12 @@ class igIndexArray(igObject):
 		names.append("_dataSize")
 		names.append("_usageFlags")
 
-	def buildIndexBuffer(self, primType):
+	def buildIndexBuffer(self, primType, stripLengths):
 		data = bytes(self._indexData._data)
 		dataFmt = None
+		dataStride = 0
 		noePrimType = noesis.RPGEO_TRIANGLE
-
+		indexCount = self._numIndices
 
 		if primType == IG_GFX_DRAW_POINTS:
 			noePrimType = noesis.RPGEO_POINTS
@@ -2094,12 +2110,28 @@ class igIndexArray(igObject):
 
 		if self._dataSize == IG_GFX_INDEX_SIZE_8_BIT:
 			dataFmt = noesis.RPGEODATA_UBYTE
+			dataStride = 1
 		elif self._dataSize == IG_GFX_INDEX_SIZE_16_BIT:
 			dataFmt = noesis.RPGEODATA_USHORT
+			dataStride = 2
 		elif self._dataSize == IG_GFX_INDEX_SIZE_32_BIT:
 			dataFmt = noesis.RPGEODATA_UINT
+			dataStride = 4
 
-		rapi.rpgCommitTriangles(data, dataFmt, self._numIndices, noePrimType, 1)
+		if primType == IG_GFX_DRAW_TRIANGLE_STRIP:
+			dataIter = 0
+			for stripLength in stripLengths._lengthArray:
+				# Swap endianness manually
+				triangleStream = []
+				for i in range(dataIter, len(data), dataStride):
+					triangleStream.extend(reversed(data[i:i+dataStride]))
+
+				triangleData = bytes(triangleStream)
+				dataIter += stripLength * dataStride
+
+				rapi.rpgCommitTriangles(triangleData, dataFmt, stripLength, noePrimType, 1)
+		else:
+			rapi.rpgCommitTriangles(data, dataFmt, indexCount, noePrimType, 1)
 
 class igPrimLengthArray(igObject):
 	def __init__(self, meta):
